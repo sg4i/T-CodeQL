@@ -74,6 +74,47 @@
 - **多看示例**：CodeQL 仓库中有大量优秀的查询示例
 - **参与社区**：加入 GitHub Discussions，与其他开发者交流
 
+## 📂 推荐的目录结构
+
+为了便于学习和使用 CodeQL，我们推荐以下目录组织方式：
+
+```
+~/codeql-projects/              # 工作根目录
+├── codeql/                     # CodeQL 标准库（克隆的官方仓库）
+│   ├── python/
+│   │   └── ql/
+│   │       ├── lib/            # Python 库文件
+│   │       └── src/            # 预定义查询
+│   │           └── Security/
+│   │               ├── CWE-089/
+│   │               │   └── SqlInjection.ql
+│   │               └── ...
+│   ├── java/
+│   ├── javascript/
+│   └── ...
+│
+├── my-queries/                 # 您的自定义查询
+│   ├── codeql-workspace.yml   # 工作空间配置
+│   ├── queries/                # 查询文件
+│   │   ├── security/
+│   │   └── quality/
+│   └── test/                   # 测试用例
+│
+└── my-projects/                # 要分析的项目
+    ├── project1/
+    │   ├── src/                # 源代码
+    │   └── project1-db/        # CodeQL 数据库（自动生成）
+    └── project2/
+```
+
+**关键点：**
+- `codeql/`：包含所有语言的标准查询和库，从 GitHub 克隆
+- `my-queries/`：存放您自己编写的查询
+- `my-projects/`：存放要分析的项目和生成的数据库
+- 所有目录在同一层级，便于管理和路径引用
+
+详细说明请参考 [快速入门](01-quick-start.md) 和 [环境搭建](02-setup.md)。
+
 ## 🤝 获取帮助
 
 - 📚 **官方文档**：https://codeql.github.com/docs/

@@ -33,7 +33,12 @@ select f, "找到了 main 函数！"
 
 ```bash
 # 保存为 hello.ql，然后运行
-codeql query run hello.ql --database=python-db
+# 假设 hello.ql 在当前目录，数据库在 ~/codeql-projects/my-projects/test-project/python-db
+codeql query run hello.ql --database=~/codeql-projects/my-projects/test-project/python-db
+
+# 或者如果已在项目目录中
+# cd ~/codeql-projects/my-projects/test-project
+# codeql query run ~/codeql-projects/my-queries/hello.ql --database=python-db
 ```
 
 ## 查询类型详解
@@ -540,13 +545,16 @@ select f, v
 
 ### 创建测试用例
 
-创建测试目录结构：
+创建测试目录结构（在您的查询目录中）：
 ```
-test/
-├── MyQuery/
-│   ├── test.py              # 测试代码
-│   ├── MyQuery.qlref        # 查询引用
-│   └── MyQuery.expected     # 期望结果
+~/codeql-projects/my-queries/
+├── queries/
+│   └── MyQuery.ql           # 您的查询
+└── test/
+    └── MyQuery/
+        ├── test.py          # 测试代码
+        ├── MyQuery.qlref    # 查询引用
+        └── MyQuery.expected # 期望结果
 ```
 
 **test.py:**

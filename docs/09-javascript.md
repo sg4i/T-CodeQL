@@ -1021,16 +1021,19 @@ function GoodComponent({ userInput }) {
 ### 运行 JavaScript 查询
 
 ```bash
+# 在您的 JavaScript 项目目录中
+cd ~/codeql-projects/my-projects/your-js-project
+
 # 创建 JavaScript 数据库
 codeql database create js-db --language=javascript --source-root=.
 
-# 运行单个查询
-codeql query run javascript/ql/src/Security/CWE-079/ReflectedXss.ql \
+# 运行单个查询（使用 CodeQL 标准库中的查询）
+codeql query run ~/codeql-projects/codeql/javascript/ql/src/Security/CWE-079/ReflectedXss.ql \
   --database=js-db
 
 # 运行 JavaScript 安全套件
 codeql database analyze js-db \
-  javascript/ql/src/codeql-suites/javascript-security-and-quality.qls \
+  ~/codeql-projects/codeql/javascript/ql/src/codeql-suites/javascript-security-and-quality.qls \
   --format=sarif-latest --output=results.sarif
 ```
 

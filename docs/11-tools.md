@@ -82,7 +82,7 @@ codeql query run <query.ql> \
   [--ram=<mb>]
 
 # 示例
-codeql query run python/ql/src/Security/CWE-089/SqlInjection.ql \
+codeql query run ~/codeql-projects/codeql/python/ql/src/Security/CWE-089/SqlInjection.ql \
   --database=python-db \
   --output=results.csv \
   --format=csv

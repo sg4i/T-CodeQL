@@ -94,12 +94,24 @@ brew install git
 ### 克隆官方仓库
 
 ```bash
+# 创建工作目录（推荐结构）
+mkdir -p ~/codeql-projects
+cd ~/codeql-projects
+
 # 克隆完整仓库（约 2GB）
 git clone https://github.com/github/codeql.git
 cd codeql
 
 # 或者只克隆最新提交（节省空间）
 git clone --depth 1 https://github.com/github/codeql.git
+```
+
+**推荐的目录结构：**
+```
+~/codeql-projects/              # 工作根目录
+├── codeql/                     # CodeQL 标准库（克隆的仓库）
+├── codeql-queries/                 # 您的自定义查询
+└── my-projects/                # 要分析的项目
 ```
 
 ### 仓库结构概览
@@ -200,121 +212,7 @@ brew install cmake
 # 安装 Visual Studio Build Tools 或 MinGW
 ```
 
-## 配置工作空间
-
-### 创建 CodeQL 工作空间
-
-```bash
-mkdir ~/codeql-workspace
-cd ~/codeql-workspace
-
-# 创建目录结构
-mkdir -p {queries,databases,results}
-
-# 创建 codeql-workspace.yml
-cat > codeql-workspace.yml << 'EOF'
-provide:
-  - "queries/**/*.ql"
-  - "queries/**/*.qll"
-dependencies:
-  codeql/python-all: ~/codeql/python/ql/lib
-  codeql/java-all: ~/codeql/java/ql/lib
-  codeql/javascript-all: ~/codeql/javascript/ql/lib
-EOF
-```
-
-### VS Code 工作空间配置
-
-创建 `.vscode/codeql-workspace.code-workspace`：
-
-```json
-{
-  "folders": [
-    {
-      "name": "CodeQL Queries",
-      "path": "./queries"
-    },
-    {
-      "name": "CodeQL Standard Library",
-      "path": "~/codeql"
-    }
-  ],
-  "settings": {
-    "codeql.cli.executablePath": "/usr/local/bin/codeql/codeql",
-    "files.associations": {
-      "*.ql": "ql",
-      "*.qll": "ql"
-    }
-  }
-}
-```
-
-## 验证安装
-
-### 创建测试数据库
-
-```bash
-# 创建简单的 Python 测试项目
-mkdir test-python && cd test-python
-cat > test.py << 'EOF'
-def hello(name):
-    print(f"Hello, {name}!")
-
-if __name__ == "__main__":
-    hello("CodeQL")
-EOF
-
-# 创建数据库
-codeql database create test-db --language=python --source-root=.
-```
-
-### 运行测试查询
-
-```bash
-# 运行简单查询
-codeql query run ~/codeql/python/ql/examples/snippets/call.ql --database=test-db
-
-# 应该看到输出显示找到的函数调用
-```
-
-### VS Code 集成测试
-
-1. 打开 VS Code
-2. 打开 CodeQL 工作空间
-3. 创建新查询文件 `test.ql`：
-
-```ql
-/**
- * @name Test query
- * @description A simple test query
- * @kind problem
- * @id test/hello
- */
-
-import python
-
-from Function f
-where f.getName() = "hello"
-select f, "Found function: " + f.getName()
-```
-
-4. 右键选择 "CodeQL: Run Query"
-5. 选择之前创建的测试数据库
-6. 查看结果面板中的输出
-
 ## 性能优化
-
-### 系统要求
-
-**最低配置:**
-- CPU: 4 核心
-- 内存: 8GB RAM
-- 存储: 50GB 可用空间
-
-**推荐配置:**
-- CPU: 8+ 核心
-- 内存: 16GB+ RAM
-- 存储: SSD，100GB+ 可用空间
 
 ### 优化设置
 

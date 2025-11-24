@@ -853,16 +853,19 @@ public class Test {
 ### 运行 Java 查询
 
 ```bash
+# 在您的 Java 项目目录中
+cd ~/codeql-projects/my-projects/your-java-project
+
 # 创建 Java 数据库
 codeql database create java-db --language=java --source-root=.
 
-# 运行单个查询
-codeql query run java/ql/src/Security/CWE/CWE-089/SqlTainted.ql \
+# 运行单个查询（使用 CodeQL 标准库中的查询）
+codeql query run ~/codeql-projects/codeql/java/ql/src/Security/CWE/CWE-089/SqlTainted.ql \
   --database=java-db
 
 # 运行 Java 安全套件
 codeql database analyze java-db \
-  java/ql/src/codeql-suites/java-security-and-quality.qls \
+  ~/codeql-projects/codeql/java/ql/src/codeql-suites/java-security-and-quality.qls \
   --format=sarif-latest --output=results.sarif
 ```
 

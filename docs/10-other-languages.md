@@ -910,15 +910,24 @@ select attr, "HTTP POST 端点"
 ### 多语言测试策略
 
 ```bash
+# 在 ~/codeql-projects/my-projects/ 目录中
+cd ~/codeql-projects/my-projects
+
 # 为每种语言创建测试数据库
 codeql database create go-db --language=go --source-root=./go-project
 codeql database create cpp-db --language=cpp --source-root=./cpp-project
 codeql database create csharp-db --language=csharp --source-root=./csharp-project
 
-# 运行语言特定的查询套件
-codeql database analyze go-db go-security-and-quality.qls
-codeql database analyze cpp-db cpp-security-and-quality.qls
-codeql database analyze csharp-db csharp-security-and-quality.qls
+# 运行语言特定的查询套件（使用 CodeQL 标准库）
+codeql database analyze go-db \
+  ~/codeql-projects/codeql/go/ql/src/codeql-suites/go-security-and-quality.qls \
+  --format=sarif-latest --output=go-results.sarif
+codeql database analyze cpp-db \
+  ~/codeql-projects/codeql/cpp/ql/src/codeql-suites/cpp-security-and-quality.qls \
+  --format=sarif-latest --output=cpp-results.sarif
+codeql database analyze csharp-db \
+  ~/codeql-projects/codeql/csharp/ql/src/codeql-suites/csharp-security-and-quality.qls \
+  --format=sarif-latest --output=csharp-results.sarif
 ```
 
 ## 下一步
