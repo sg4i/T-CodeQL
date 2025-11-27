@@ -159,6 +159,40 @@ java -version
 javac -version
 ```
 
+验证完整安装
+
+创建一个测试查询来验证环境配置：
+
+```bash
+# 创建测试目录
+mkdir -p ~/codeql-test
+cd ~/codeql-test
+
+# 创建简单的 Java 测试文件
+cat > Test.java << 'EOF'
+public class Test {
+    public static void main(String[] args) {
+        System.out.println("Hello CodeQL!");
+    }
+}
+EOF
+
+# 创建 CodeQL 数据库, 单文件没有Maven/Gradle等构建，使用javac
+codeql database create test-db --language=java --source-root=. --command='bash -c "javac -d build/classes $(find . -name \"*.java\")"'
+
+# 验证数据库创建成功, 如果看到数据库目录包含多个文件，说明环境配置成功！
+ls test-db/
+
+# 分析，使用 绝对路径查询
+codeql database analyze test-db \
+  --format=sarif-latest \
+  --output=java-results.sarif \
+  --search-path=~/codeql-workspace/codeql-repo \
+  ~/codeql-workspace/codeql-repo/java/ql/src/codeql-suites/java-security-extended.qls
+
+codeql database interpret-results test-db --format=csv -o result.csv --search-path ~/codeql-workspace/codeql-repo
+```
+
 ### JavaScript/Node.js
 
 ```bash

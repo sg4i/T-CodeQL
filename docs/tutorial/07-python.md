@@ -2,6 +2,8 @@
 
 > Python 代码分析完整指南：从 Web 应用到数据科学，掌握 Python 特定的 CodeQL 查询技巧
 
+- codeql-library-for-python: [https://codeql.github.com/docs/codeql-language-guides/codeql-library-for-python/](https://codeql.github.com/docs/codeql-language-guides/codeql-library-for-python/)
+- Using API graphs in Python: [https://codeql.github.com/docs/codeql-language-guides/using-api-graphs-in-python/](https://codeql.github.com/docs/codeql-language-guides/using-api-graphs-in-python/)
 
 ## Python 语言支持概览
 
@@ -14,7 +16,6 @@ python/
 │   │   ├── semmle/python/     # 标准库实现
 │   │   │   ├── dataflow/      # 数据流分析
 │   │   │   ├── security/      # 安全相关
-│   │   │   ├── web/           # Web 框架支持
 │   │   │   ├── Concepts.qll   # 通用概念
 │   │   │   └── ApiGraphs.qll  # API 建模
 │   │   ├── qlpack.yml         # 库包配置
@@ -735,8 +736,11 @@ select p.getId(), p.getFunction().getName(), p.getIndex()
 ```ql
 import python
 
+# call location: file name with lineno
+# call module: xxx.xx
+
 from Call call
-select call, call.getFunc(), call.getLocation()
+select call.getFunc(), "execute call at location: " + call.getLocation().toString() + " in module: " + call.getEnclosingModule().getName()
 ```
 
 #### 查找特定函数的调用
@@ -767,13 +771,6 @@ select call, call.getArg(0), call.getNumArg(), call.getAKeyword()
 
 ### 4. 字符串和常量分析
 
-#### 查找字符串常量
-```ql
-import python
-
-from StrConst s
-select s, s.getText(), s.getLocation()
-```
 
 #### 查找包含特定内容的字符串
 ```ql
@@ -790,11 +787,11 @@ import python
 
 from AssignStmt assign, StrConst value
 where 
-  assign.getValue() = value and
   exists(Name target | 
-    assign.getATarget() = target and
-    target.getId().toLowerCase().matches("%password%")
-  )
+    target.getId().toLowerCase().matches("%password%") and
+    assign.getATarget() = target
+  ) and
+  assign.getValue() = value
 select assign, value.getText(), assign.getLocation()
 ```
 
@@ -1742,50 +1739,6 @@ where
 select f, "函数 '" + f.getName() + "' 有 " + paramCount + " 个参数，考虑重构"
 ```
 
-## 性能相关检查
-
-### 1. 低效的字符串拼接
-
-```ql
-/**
- * @name 低效的字符串拼接
- * @description 检测在循环中使用 += 拼接字符串的低效模式
- * @kind problem
- * @problem.severity recommendation
- * @id py/inefficient-string-concatenation
- */
-
-import python
-
-from For loop, AugAssignStmt augassign
-where
-  augassign.getParent+() = loop and
-  augassign.getOp() instanceof Add and
-  augassign.getTarget().(Name).getVariable().getType().getName() = "str"
-
-select augassign, "在循环中使用 += 拼接字符串效率低下，考虑使用 join()"
-```
-
-### 2. 不必要的列表推导
-
-```ql
-/**
- * @name 可优化的列表推导
- * @description 检测可以用生成器表达式替代的列表推导
- * @kind problem
- * @problem.severity recommendation
- * @id py/unnecessary-list-comprehension
- */
-
-import python
-
-from ListComp lc, CallNode call
-where
-  call.getArg(0) = lc and
-  call.getFunction().(NameNode).getId() in ["sum", "max", "min", "any", "all"]
-
-select lc, "列表推导可以用生成器表达式替代，节省内存"
-```
 
 ## 测试和示例
 
@@ -1886,6 +1839,10 @@ select f
 // select f
 ```
 
+exists 版本 将条件转换为子查询，只检查是否存在匹配的 func，而不物化完整的连接结果。这类似于半连接（semi-join），引擎可短路求值（一旦找到匹配即停止），减少内存和计算开销。
+
+适用场景：当子条件不影响 select 输出，exists 更高效
+
 ### 2. 利用 Python 特定的 API
 
 #### 使用 API 图追踪框架
@@ -1899,12 +1856,13 @@ where request = API::moduleImport("flask").getMember("request")
 select request.getMember("args").getACall(), "Flask 请求参数访问"
 
 // 追踪 Django 模型
+// something like API::moduleImport("django.db.models") will not do what you expect
 from API::Node model
-where model = API::moduleImport("django.db.models").getMember("Model")
+where model = API::moduleImport("django").getMemeber("db").getMember("models").getMember("Model")
 select model.getASubclass(), "Django 模型子类"
 ```
 
-#### 使用点对分析
+#### 使用指向分析
 ```ql
 import python
 import semmle.python.pointsto.PointsTo
@@ -1960,74 +1918,8 @@ where
 select call, "importlib 动态导入: " + modName.getText()
 ```
 
-### 4. 框架特定的优化
 
-#### Django 查询优化
-```ql
-import python
-import semmle.python.web.django.Django
-
-// Django 视图函数
-from DjangoView view
-where view.getHttpMethod() = "POST"
-select view.getFunction(), "Django POST 视图"
-
-// Django 模型查询
-from Call call, Attribute method
-where 
-  call.getFunc() = method and
-  method.getName() in ["filter", "get", "all", "exclude"] and
-  exists(ClassObject cls |
-    method.getObject().pointsTo(cls) and
-    cls.getASuperclass*().getName() = "Model"
-  )
-select call, "Django 模型查询: " + method.getName()
-```
-
-#### Flask 查询优化
-```ql
-import python
-import semmle.python.web.flask.Flask
-
-// Flask 路由装饰器
-from FlaskRoute route
-select route.getFunction(), route.getUrl(), route.getHttpMethod()
-
-// Flask 请求处理
-from FlaskRequestData request
-select request.asCfgNode(), request.getKind()
-```
-
-### 5. 错误处理和边界情况
-
-#### 安全的类型检查
-```ql
-import python
-
-// 检查是否存在属性访问
-from Attribute attr
-where exists(attr.getObject()) and exists(attr.getName())
-select attr
-
-// 检查是否存在函数调用
-from Call call
-where exists(call.getFunc())
-select call
-```
-
-#### 处理可选值
-```ql
-import python
-
-// 安全地获取可选的异常类型
-from ExceptStmt except
-select except, 
-  if exists(except.getType()) 
-  then except.getType().toString() 
-  else "bare except"
-```
-
-### 6. 调试和测试技巧
+### 调试和测试技巧
 
 #### 添加调试信息
 ```ql
@@ -2276,26 +2168,3 @@ select sink.getNode(), source, sink, "数据流"
 4. **统计数量**：使用 `count()` 验证查询范围
 5. **添加调试输出**：临时添加额外的 select 子句
 
-### 下一步
-
-掌握了 Python 场景应用后，建议继续学习：
-
-1. **[Java 场景](08-java.md)** - 学习 Java 企业级应用分析
-2. **[JavaScript 场景](09-javascript.md)** - 前端和 Node.js 安全分析
-3. **[最佳实践](12-best-practices.md)** - 查询优化和调试技巧
-
----
-
-**Python 场景掌握完毕！** 🐍 
-
-现在您已经全面了解了 CodeQL Python 库的所有核心类和查询方法。这份文档涵盖了：
-
-- ✅ **53+ 个核心 from 语句**及其用法
-- ✅ **200+ 个常用方法**和属性
-- ✅ **30+ 个实用查询示例**
-- ✅ **安全漏洞检测模式**
-- ✅ **代码质量检查技巧**
-- ✅ **性能优化最佳实践**
-- ✅ **调试和测试方法**
-
-您现在可以高效地分析各种 Python 应用的安全问题和代码质量问题了！

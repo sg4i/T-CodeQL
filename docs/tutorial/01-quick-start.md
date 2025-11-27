@@ -208,6 +208,45 @@ codeql database upgrade <db-name>
 | Swift | `swift` | iOS/macOS 应用 |
 | Rust | `rust` | 系统编程、WebAssembly |
 
+## 常用 CodeQL 命令
+
+### 数据库操作
+
+```bash
+# 创建数据库
+codeql database create <database-name> --language=<language> --source-root=<source-directory>
+
+# 查看数据库信息
+codeql database info <database-name>
+
+# 升级数据库
+codeql database upgrade <database-name>
+```
+
+### 查询操作
+
+```bash
+# 运行查询
+codeql query run <query-file> --database=<database-name>
+
+# 运行查询套件
+codeql database analyze <database-name> <query-suite> --format=<format> --output=<output-file>
+
+# 查看可用的查询套件
+codeql resolve queries <language>
+```
+
+### 结果操作
+
+```bash
+# 查看结果
+codeql bqrs decode <results-file> --format=table
+
+# 转换结果格式
+codeql bqrs decode <results-file> --format=csv --output=<output-file>
+```
+
+
 ---
 
 **准备好深入学习了吗？** 继续阅读 [环境搭建](02-setup.md) 来配置完整的开发环境！
