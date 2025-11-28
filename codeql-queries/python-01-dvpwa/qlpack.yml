@@ -1,0 +1,10 @@
+---
+library: false
+warnOnImplicitThis: true
+name: my-org/python-01
+version: 0.0.1
+groups:
+  - python
+  - examples
+dependencies:
+  codeql/python-all: "*"      # * : 任意版本（不推荐生产环境）
