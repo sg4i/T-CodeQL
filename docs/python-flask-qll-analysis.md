@@ -9,6 +9,11 @@
 3. [API 图建模技术](#3-api-图建模技术)
 4. [核心建模模式详解](#4-核心建模模式详解)
 5. [安全相关建模](#5-安全相关建模)
+   - 5.1 [Cookie 操作建模](#51-cookie-操作建模)
+   - 5.2 [文件系统访问建模](#52-文件系统访问建模)
+   - 5.3 [路径注入净化器](#53-路径注入净化器)
+   - 5.4 [流摘要（FlowSummary）](#54-流摘要flowsummary)
+   - 5.5 [模板注入（SSTI）检测](#55-模板注入ssti检测)
 6. [完整代码结构总结](#6-完整代码结构总结)
 
 ---
@@ -437,6 +442,560 @@ private class RenderTemplateStringSummary extends SummarizedCallable {
 ```
 
 **说明**：模板字符串参数会影响返回值，但不是值保持的传播（模板被渲染了）。
+
+### 5.5 模板注入（SSTI）检测
+
+**目的**：完整展示 CodeQL 如何检测服务端模板注入漏洞，从查询定义到 Flask 框架建模的端到端流程。
+
+#### 5.5.1 SSTI 漏洞背景
+
+**什么是服务端模板注入（SSTI）**
+
+服务端模板注入（Server-Side Template Injection, SSTI）是一种安全漏洞，当应用程序将用户输入直接嵌入模板引擎进行渲染时，攻击者可以注入恶意模板语法，导致：
+
+- **远程代码执行（RCE）**：攻击者可以在服务器上执行任意 Python 代码
+- **敏感信息泄露**：读取服务器文件、环境变量等
+- **服务拒绝（DoS）**：通过恶意模板消耗服务器资源
+
+**Flask 中的危险函数**
+
+Flask 使用 Jinja2 作为模板引擎，以下函数如果传入用户可控的模板字符串则会产生 SSTI 漏洞：
+
+- `flask.render_template_string(template_source, **context)` - 直接渲染模板字符串
+- `flask.stream_template_string(template_source, **context)` - 流式渲染模板字符串
+
+**漏洞示例**
+
+```python
+from flask import Flask, request, render_template_string
+
+app = Flask(__name__)
+
+@app.route('/hello')
+def hello():
+    name = request.args.get('name', 'Guest')
+    # BAD: 用户输入直接作为模板字符串
+    template = '<h1>Hello ' + name + '!</h1>'
+    return render_template_string(template)
+```
+
+攻击载荷示例：`?name={{config.items()}}`  可以泄露 Flask 配置信息
+
+**CWE 分类**
+
+SSTI 属于 [CWE-074: Improper Neutralization of Special Elements in Output Used by a Downstream Component ('Injection')](https://cwe.mitre.org/data/definitions/74.html)
+
+#### 5.5.2 CodeQL 检测架构
+
+CodeQL 检测 SSTI 漏洞采用**三层架构**设计：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: Query（查询层）                                    │
+│  文件: codeql/python/ql/src/Security/CWE-074/               │
+│        TemplateInjection.ql                                 │
+│  作用: 定义查询元数据和结果格式                              │
+└─────────────────────────────────────────────────────────────┘
+                          ↓ imports
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 2: Customizations（自定义配置层）                     │
+│  文件: semmle/python/security/dataflow/                     │
+│        TemplateInjectionCustomizations.qll                  │
+│        TemplateInjectionQuery.qll                           │
+│  作用: 定义 Source/Sink/Sanitizer，配置污点追踪            │
+└─────────────────────────────────────────────────────────────┘
+                          ↓ uses
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: Framework Modeling（框架建模层）                   │
+│  文件: semmle/python/frameworks/Flask.qll                   │
+│        semmle/python/Concepts.qll                           │
+│  作用: 建模 Flask 的 API 行为，提供 TemplateConstruction   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**各层职责**
+
+| 层级 | 文件 | 职责 |
+|------|------|------|
+| Query | `TemplateInjection.ql` | 执行污点追踪查询，格式化输出结果 |
+| Customizations | `TemplateInjectionCustomizations.qll` | 定义 `Source`（用户输入）、`Sink`（模板构造）、`Sanitizer`（净化器） |
+| Customizations | `TemplateInjectionQuery.qll` | 配置全局污点追踪模块 `TemplateInjectionFlow` |
+| Framework | `Flask.qll` | 实现 `FlaskTemplateConstruction` 类，标识 `render_template_string` 调用 |
+| Concepts | `Concepts.qll` | 定义抽象概念 `TemplateConstruction::Range` |
+
+**组件依赖关系链**
+
+```
+Concepts.qll (定义抽象概念 TemplateConstruction::Range)
+    ↓ 被 Customizations 使用
+TemplateInjectionCustomizations.qll (将抽象概念转换为具体的 Sink)
+    ↓ 被 Query 配置层使用
+TemplateInjectionQuery.qll (配置污点追踪引擎)
+    ↓ 被查询层使用
+TemplateInjection.ql (执行查询并输出结果)
+```
+
+**架构设计优势**：
+
+1. **可扩展性**：新框架（如 Django、Tornado）只需实现 `TemplateConstruction::Range` 接口，无需修改 Customizations 和 Query 层
+2. **复用性**：`TemplateConstructionAsSink` 通过多态机制自动识别所有框架的模板构造点
+3. **模块化**：每层职责清晰，Concepts 定义"是什么"，Customizations 定义"如何用"，Query 定义"如何查"
+4. **维护性**：添加新的模板引擎支持不会影响现有查询逻辑
+
+#### 5.5.3 Flask.qll 中的 SSTI 支持
+
+Flask.qll 提供两方面的 SSTI 检测支持：**模板构造点识别** 和 **数据流摘要**。
+
+**1. 模板构造点识别：FlaskTemplateConstruction 类**
+
+该类标识所有可能产生模板注入的 Flask API 调用点（位于 [Flask.qll:725-735](../codeql/python/ql/lib/semmle/python/frameworks/Flask.qll#L725-L735)）：
+
+```ql
+/** A call to `flask.render_template_string` or `flask.stream_template_string` as a template construction sink. */
+private class FlaskTemplateConstruction extends TemplateConstruction::Range, API::CallNode {
+  FlaskTemplateConstruction() {
+    this =
+      API::moduleImport("flask")
+          .getMember(["render_template_string", "stream_template_string"])
+          .getACall()
+  }
+
+  override DataFlow::Node getSourceArg() { result = this.getArg(0) }
+}
+```
+
+**关键设计点**：
+
+1. **继承 `TemplateConstruction::Range`**
+   这是 `Concepts.qll` 中定义的抽象概念，所有模板引擎的模板构造点都应该实现这个接口：
+
+   ```ql
+   // 来自 Concepts.qll:882-893
+   abstract class Range extends DataFlow::Node {
+     /** Gets the argument that specifies the template source. */
+     abstract DataFlow::Node getSourceArg();
+   }
+   ```
+
+2. **使用 API 图匹配调用点**
+   `API::moduleImport("flask").getMember(...).getACall()` 可以匹配所有形式的调用：
+   - `flask.render_template_string(template)`
+   - `from flask import render_template_string; render_template_string(template)`
+   - `import flask; flask.stream_template_string(template)`
+
+3. **重写 `getSourceArg()` 方法**
+   返回 `this.getArg(0)` 指定第一个参数（模板字符串）为敏感输入点
+
+**2. 数据流摘要：RenderTemplateStringSummary 和 StreamTemplateStringSummary**
+
+这两个类描述模板渲染函数的数据流行为（位于 [Flask.qll:673-723](../codeql/python/ql/lib/semmle/python/frameworks/Flask.qll#L673-L723)）：
+
+```ql
+private class RenderTemplateStringSummary extends SummarizedCallable {
+  RenderTemplateStringSummary() { this = "flask.render_template_string" }
+
+  override DataFlow::CallCfgNode getACall() {
+    result = API::moduleImport("flask").getMember("render_template_string").getACall()
+  }
+
+  override predicate propagatesFlow(string input, string output, boolean preservesValue) {
+    input = "Argument[0]" and
+    output = "ReturnValue" and
+    preservesValue = false  // 模板被处理，不是原值传播
+  }
+}
+```
+
+**流摘要的作用**：
+
+- **输入**：`Argument[0]` 表示第一个参数（模板字符串）
+- **输出**：`ReturnValue` 表示函数返回值（渲染后的 HTML）
+- **preservesValue = false**：表示这不是值保持的传播，因为模板会被解析和渲染
+
+这使得 CodeQL 可以追踪从模板字符串到渲染结果的数据流。
+
+#### 5.5.4 检测流程串联
+
+完整的 SSTI 检测流程如下：
+
+**1. Source（污点源）- 用户输入**
+
+来自 Flask 请求对象的所有用户可控数据（[Flask.qll:438-442](../codeql/python/ql/lib/semmle/python/frameworks/Flask.qll#L438-L442)）：
+
+```ql
+private class FlaskRequestSource extends RemoteFlowSource::Range {
+  FlaskRequestSource() { this = request().asSource() }
+
+  override string getSourceType() { result = "flask.request" }
+}
+```
+
+用户输入来源包括：
+- `request.args` - URL 查询参数
+- `request.form` - POST 表单数据
+- `request.json` - JSON 请求体
+- `request.cookies` - Cookie
+- `request.headers` - HTTP 头
+- `request.data` - 原始请求数据
+
+**2. Sink（污点汇聚点）- 模板构造**
+
+所有 `FlaskTemplateConstruction` 实例的 `getSourceArg()` 都是 sink（[TemplateInjectionCustomizations.qll:42-44](../codeql/python/ql/lib/semmle/python/security/dataflow/TemplateInjectionCustomizations.qll#L42-L44)）：
+
+```ql
+class TemplateConstructionAsSink extends Sink {
+  TemplateConstructionAsSink() {
+    // 🔑 关键：这里使用了 Concepts.qll 中定义的抽象类
+    // any(TemplateConstruction c) 会匹配所有实现了 TemplateConstruction::Range 的类
+    // 包括 Flask.qll 中的 FlaskTemplateConstruction
+    this = any(TemplateConstruction c).getSourceArg()
+  }
+}
+```
+
+**多态机制解析**：
+
+1. **抽象概念查询**：`any(TemplateConstruction c)` 查找所有 `TemplateConstruction` 实例
+2. **自动框架匹配**：因为 `FlaskTemplateConstruction` 继承了 `TemplateConstruction::Range`，它会被自动包含
+3. **扩展性保证**：当添加 Django、Tornado 等框架的模板构造类时，只要它们也继承 `TemplateConstruction::Range`，就会自动被识别为 Sink
+4. **零配置复用**：Customizations 层无需修改即可支持新框架
+
+**3. Taint Tracking（污点追踪配置）**
+
+`TemplateInjectionQuery.qll` 定义全局污点追踪模块（[TemplateInjectionQuery.qll:14-25](../codeql/python/ql/lib/semmle/python/security/dataflow/TemplateInjectionQuery.qll#L14-L25)）：
+
+```ql
+private module TemplateInjectionConfig implements DataFlow::ConfigSig {
+  predicate isSource(DataFlow::Node node) { node instanceof Source }
+  predicate isSink(DataFlow::Node node) { node instanceof Sink }
+  predicate isBarrierIn(DataFlow::Node node) { node instanceof Sanitizer }
+}
+
+module TemplateInjectionFlow = TaintTracking::Global<TemplateInjectionConfig>;
+```
+
+**4. Query（查询执行）**
+
+`TemplateInjection.ql` 执行污点追踪并输出结果（[TemplateInjection.ql:17-20](../codeql/python/ql/src/Security/CWE-074/TemplateInjection.ql#L17-L20)）：
+
+```ql
+from TemplateInjectionFlow::PathNode source, TemplateInjectionFlow::PathNode sink
+where TemplateInjectionFlow::flowPath(source, sink)
+select sink.getNode(), source, sink,
+  "This template construction depends on a $@.",
+  source.getNode(), "user-provided value"
+```
+
+**数据流传播过程**
+
+```
+用户输入 (Source)
+    ↓
+request.args.get('template')   ← FlaskRequestSource 识别
+    ↓
+[污点传播步骤]
+    ↓ 赋值、拼接、参数传递...
+    ↓
+render_template_string(user_input)   ← FlaskTemplateConstruction.getSourceArg() 识别为 Sink
+    ↓
+[CodeQL 报告路径]
+```
+
+#### 5.5.5 完整检测流程图
+
+**图 1：三层架构交互图**
+
+```mermaid
+graph TB
+    subgraph "Query Layer 查询层"
+        A[TemplateInjection.ql]
+    end
+
+    subgraph "Customizations Layer 配置层"
+        B[TemplateInjectionQuery.qll]
+        C[TemplateInjectionCustomizations.qll]
+        D[Source: RemoteFlowSource]
+        E[Sink: TemplateConstructionAsSink]
+        F[Sanitizer: ConstCompare]
+    end
+
+    subgraph "Framework Layer 框架层"
+        G[Flask.qll: FlaskRequestSource]
+        H[Flask.qll: FlaskTemplateConstruction]
+        I[Concepts.qll: TemplateConstruction]
+    end
+
+    A -->|imports| B
+    B -->|uses| C
+    C -->|defines| D
+    C -->|defines| E
+    C -->|defines| F
+
+    D -->|extends| G
+    E -->|uses| H
+    H -->|extends| I
+
+    B -->|configures| TT[TaintTracking::Global]
+    TT -->|tracks flow| FLOW[Source → Sink]
+
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#fff4e1
+    style G fill:#e8f5e9
+    style H fill:#e8f5e9
+    style I fill:#e8f5e9
+```
+
+**图 2：污点追踪数据流图**
+
+```mermaid
+graph LR
+    subgraph "Source 污点源"
+        REQ[flask.request]
+        ARGS[request.args]
+        FORM[request.form]
+        JSON[request.json]
+    end
+
+    subgraph "Taint Propagation 污点传播"
+        VAR1[template = request.args.get'template']
+        VAR2[url_param = request.args'name']
+        CONCAT[template_str = 'Hello' + url_param]
+    end
+
+    subgraph "Sink 污点汇聚"
+        RENDER[render_template_string template_str]
+        STREAM[stream_template_string template_str]
+    end
+
+    subgraph "Detection 检测"
+        CODEQL[CodeQL Reports Path]
+    end
+
+    ARGS --> VAR1
+    ARGS --> VAR2
+    VAR2 --> CONCAT
+    VAR1 --> RENDER
+    CONCAT --> RENDER
+    VAR1 --> STREAM
+
+    RENDER --> CODEQL
+    STREAM --> CODEQL
+
+    style REQ fill:#ffcdd2
+    style ARGS fill:#ffcdd2
+    style RENDER fill:#fff59d
+    style STREAM fill:#fff59d
+    style CODEQL fill:#c8e6c9
+```
+
+**图 3：类关系图**
+
+```mermaid
+classDiagram
+    class TemplateConstruction {
+        <<concept>>
+        +getSourceArg() DataFlow::Node
+    }
+
+    class TemplateConstruction_Range {
+        <<abstract>>
+        +getSourceArg()* DataFlow::Node
+    }
+
+    class FlaskTemplateConstruction {
+        -API::CallNode
+        +getSourceArg() DataFlow::Node
+    }
+
+    class RemoteFlowSource {
+        <<concept>>
+        +getSourceType() string
+    }
+
+    class FlaskRequestSource {
+        -request().asSource()
+        +getSourceType() string
+    }
+
+    class TemplateInjection_Sink {
+        +TemplateConstruction.getSourceArg()
+    }
+
+    class TemplateInjection_Source {
+        +RemoteFlowSource
+    }
+
+    TemplateConstruction --|> TemplateConstruction_Range : instanceof
+    FlaskTemplateConstruction --|> TemplateConstruction_Range : extends
+    FlaskTemplateConstruction --|> API_CallNode : extends
+
+    FlaskRequestSource --|> RemoteFlowSource : extends
+
+    TemplateInjection_Sink ..> TemplateConstruction : uses
+    TemplateInjection_Source ..> RemoteFlowSource : uses
+
+    note for FlaskTemplateConstruction "匹配:\nflask.render_template_string()\nflask.stream_template_string()"
+
+    note for FlaskRequestSource "匹配:\nflask.request.args\nflask.request.form\nflask.request.json 等"
+```
+
+**图 4：运行时交互序列图**
+
+这个图展示查询执行时各组件如何协作：
+
+```mermaid
+sequenceDiagram
+    participant Query as TemplateInjection.ql
+    participant Flow as TemplateInjectionFlow
+    participant Config as TemplateInjectionConfig
+    participant Custom as Customizations
+    participant Concept as Concepts.qll
+    participant Flask as Flask.qll
+
+    Note over Query: 查询启动
+    Query->>Flow: flowPath(source, sink)?
+
+    Note over Flow: 检查候选节点
+    Flow->>Config: isSource(node)?
+    Config->>Custom: node instanceof Source?
+    Custom->>Flask: 检查 FlaskRequestSource
+    Flask-->>Custom: ✓ request.args.get('template')
+    Custom-->>Config: ✓ 是 Source
+    Config-->>Flow: 确认为污点源
+
+    Note over Flow: 开始污点追踪
+    Flow->>Flow: 追踪数据流传播
+
+    Note over Flow: 检查潜在 Sink
+    Flow->>Config: isSink(node)?
+    Config->>Custom: node instanceof Sink?
+    Custom->>Concept: any(TemplateConstruction c)
+    Note over Concept: 查找所有 Range 实现
+    Concept->>Flask: 查找 TemplateConstruction::Range 实现
+    Flask-->>Concept: FlaskTemplateConstruction
+    Concept->>Flask: getSourceArg()?
+    Flask-->>Concept: template 参数 (第0个参数)
+    Concept-->>Custom: 返回 render_template_string 的参数
+    Custom-->>Config: ✓ 是 Sink
+    Config-->>Flow: 确认为污点汇聚点
+
+    Note over Flow: 验证完整路径
+    Flow->>Flow: 存在 Source → Sink 路径？
+    Flow-->>Query: ✓ 返回污点路径
+
+    Note over Query: 生成报告
+    Query->>Query: 格式化输出结果
+```
+
+**序列图说明**：
+
+1. **查询启动阶段**：`TemplateInjection.ql` 调用 `TemplateInjectionFlow::flowPath()` 开始污点追踪
+2. **Source 识别**：
+   - Flow 引擎询问 Config："这个节点是 Source 吗？"
+   - Config 委托给 Customizations 层的 `Source` 类
+   - Customizations 通过 Flask.qll 的 `FlaskRequestSource` 识别用户输入
+3. **污点传播**：Flow 引擎追踪数据流在程序中的传播路径
+4. **Sink 识别**（关键的多态机制）：
+   - Flow 引擎询问 Config："这个节点是 Sink 吗？"
+   - Config 委托给 Customizations 的 `TemplateConstructionAsSink`
+   - Customizations 查询 Concepts.qll 的抽象概念 `TemplateConstruction`
+   - Concepts 通过多态查找所有实现了 `Range` 的类（包括 Flask.qll 的实现）
+   - Flask.qll 返回 `FlaskTemplateConstruction.getSourceArg()`
+5. **路径验证**：Flow 引擎确认存在完整的 Source → Sink 路径
+6. **结果输出**：Query 格式化并输出警报信息
+
+这个序列展示了**面向对象设计**和**多态机制**如何让系统具有高度的可扩展性。
+
+#### 5.5.6 代码示例与检测演示
+
+**漏洞代码示例**
+
+```python
+from flask import Flask, request, render_template_string
+
+app = Flask(__name__)
+
+# 场景 1：直接拼接用户输入到模板
+@app.route('/greet1')
+def greet1():
+    name = request.args.get('name', 'World')
+    template = f'<h1>Hello {name}!</h1>'  # 用户输入嵌入模板
+    return render_template_string(template)  # BAD: SSTI 漏洞
+
+# 场景 2：用户输入直接作为模板字符串
+@app.route('/greet2')
+def greet2():
+    template = request.args.get('template', '<h1>Default</h1>')
+    return render_template_string(template)  # BAD: SSTI 漏洞
+
+# 场景 3：表单数据作为模板
+@app.route('/render', methods=['POST'])
+def render():
+    template = request.form.get('content')
+    return render_template_string(template)  # BAD: SSTI 漏洞
+
+# 场景 4：JSON 数据作为模板
+@app.route('/api/render', methods=['POST'])
+def api_render():
+    data = request.get_json()
+    template = data.get('template')
+    return render_template_string(template)  # BAD: SSTI 漏洞
+```
+
+**CodeQL 检测结果**
+
+运行 `TemplateInjection.ql` 查询会产生以下结果：
+
+| Location | Message |
+|----------|---------|
+| `app.py:8` | This template construction depends on a user-provided value (from `request.args.get('name')` at line 7) |
+| `app.py:14` | This template construction depends on a user-provided value (from `request.args.get('template')` at line 13) |
+| `app.py:19` | This template construction depends on a user-provided value (from `request.form.get('content')` at line 18) |
+| `app.py:25` | This template construction depends on a user-provided value (from `request.get_json()` at line 23) |
+
+**检测步骤详解**
+
+以场景 1 为例，CodeQL 的检测过程：
+
+1. **识别 Source**
+   `FlaskRequestSource` 识别 `request.args.get('name')` 为用户输入源
+
+2. **污点传播**
+   CodeQL 追踪污点流动：
+   ```
+   request.args.get('name') → name 变量 → f-string 拼接 → template 变量
+   ```
+
+3. **识别 Sink**
+   `FlaskTemplateConstruction` 识别 `render_template_string(template)` 调用，
+   且 `getSourceArg()` 返回第一个参数 `template`
+
+4. **验证路径**
+   `TemplateInjectionFlow::flowPath(source, sink)` 确认存在从 source 到 sink 的污点路径
+
+5. **生成报告**
+   输出包含源位置、汇聚位置和完整路径的警报
+
+**修复建议**
+
+安全的做法是使用参数化模板：
+
+```python
+# 安全方式 1：使用模板参数
+@app.route('/greet_safe1')
+def greet_safe1():
+    name = request.args.get('name', 'World')
+    # GOOD: 用户输入作为参数，不是模板本身
+    return render_template_string('<h1>Hello {{ name }}!</h1>', name=name)
+
+# 安全方式 2：使用模板文件
+@app.route('/greet_safe2')
+def greet_safe2():
+    name = request.args.get('name', 'World')
+    # GOOD: 使用预定义模板文件
+    return render_template('greet.html', name=name)
+```
 
 ---
 
