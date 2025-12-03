@@ -10,44 +10,171 @@ extensions:
 
 ```
 
-- sourceModel(package, type, subtypes, name, signature, ext, output, kind, provenance).
-- sinkModel(package, type, subtypes, name, signature, ext, input, kind, provenance).
-- summaryModel(package, type, subtypes, name, signature, ext, input, output, kind, provenance)
-- neutralModel(package, type, name, signature, kind, provenance)
+## Customizing Library Models for Python
 
-## sourceModel data
+- [Customizing Library Models for Python](https://codeql.github.com/docs/codeql-language-guides/customizing-library-models-for-python/)
 
-| 索引 | 字段名 | 含义 | 示例值 |
-|------|--------|------|--------|
-| 0 | package | 包名 (Package Name) | "flask" |
-| 1 | type | 类名 (Class Name) (如果是函数则留空或填 "") | "Request" |
-| 2 | name | 属性/方法名 (Member Name) | "args" |
-| 3 | output | 污点产生的位置 (Access Path) | "Attribute" (属性本身)<br>"ReturnValue" (方法返回值) |
-| 4 | kind | 污点类型 (Source Kind) | "remote" (远程输入)<br>"file" (文件读取) |
-| 5 | provenance | 来源标记 (通常用于调试) | "manual", "generated" |
+- sourceModel(type, path, kind)
+- sinkModel(type, path, kind)
+- typeModel(type1, type2, path)
+- summaryModel(type, path, input, output, kind)
 
-## sinkModel data
+### sourceModel
 
-| 索引 | 字段名 | 含义 | 示例值 |
-|------|--------|------|--------|
-| 0 | package | 包名 | "sqlite3" |
-| 1 | type | 类名 | "Cursor" |
-| 2 | name | 方法名 | "execute" |
-| 3 | input | 危险参数的位置 (Access Path) | "Argument[0]" (第一个参数) |
-| 4 | kind | 漏洞类型 (Sink Kind) | "sql-injection"<br>"command-injection" |
-| 5 | provenance | 来源标记 | "manual" |
+sourceModel(type, path, kind):
+- type: Name of a type from which to evaluate path.
+- path: Access path leading to the source.
+- kind: Kind of source to add. Currently only `remote` is used
 
-## summaryModel
+#### example
 
-| 索引 | 字段名 | 含义 | 示例值 |
-|------|--------|------|--------|
-| 0 | package | 包名 | "sqlite3" |
-| 1 | type | 类名 | "Cursor" |
-| 2 | name | 方法名 | "execute" |
-| 3 | input | 输入位置 (Source Access Path) | "Argument[0]" (第一个参数) |
-| 4 | output | 输出位置 (Target Access Path) | "ReturnValue" |
-| 5 | kind | 传播类型 (Flow Kind) | "taint" (污点传播)"value" (值保留) |
-| 6 | provenance | 来源标记 | "manual" |
+```python
+from django.db import models
+
+def user_directory_path(instance, filename): # <-- add 'filename' as a taint source
+  # file will be uploaded to MEDIA_ROOT/user_<id>/<filename>
+  return "user_{0}/{1}".format(instance.user.id, filename)
+
+class MyModel(models.Model):
+  upload = models.FileField(upload_to=user_directory_path) # <-- the 'upload_to' parameter defines our custom function
+```
+
+```yaml
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: sourceModel
+    data:
+      - [
+          "django.db.models.FileField!",
+          "Call.Argument[0,upload_to:].Parameter[1]",
+          "remote",
+        ]
+```
+
+- `FileField!`: 类型名称末尾的“ !” 表示我们查找的是类本身，而不是该类的实例
+- `[0,upload_to:]`: 选择第一个位置参数，或者名为 upload_to 的命名参数。请注意，参数名称末尾的冒号表示我们正在查找命名参数
+
+### sinkModel
+
+sinkModel(type, path, kind):
+- type: Name of a type from which to evaluate path.
+- path: Access path leading to the sink.
+- kind: Kind of sink to add. See the section on sink kinds for a list of supported kinds.
+
+Kind of sink:
+- code-injection: A sink that can be used to inject code, such as in calls to exec.
+- command-injection: A sink that can be used to inject shell commands, such as in calls to os.system.
+- path-injection: A sink that can be used for path injection in a file system access, such as in calls to flask.send_from_directory.
+- sql-injection: A sink that can be used for SQL injection, such as in a MySQL query call.
+- html-injection: A sink that can be used for HTML injection, such as a server response body.
+- js-injection: A sink that can be used for JS injection, such as a server response body.
+- url-redirection: A sink that can be used to redirect the user to a malicious URL.
+- unsafe-deserialization: A deserialization sink that can lead to code execution or other unsafe behavior, such as an unsafe YAML parser.
+- log-injection: A sink that can be used for log injection, such as in a logging.info call.
+
+#### example
+
+```python
+import invoke
+c = invoke.Context()
+c.run(cmd) # <-- add 'cmd' as a taint sink
+```
+
+```
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: sinkModel
+    data:
+      - ["invoke", "Member[Context].Instance.Member[run].Argument[0]", "command-injection"]
+```
+
+### summaryModel
+
+summaryModel(type, path, input, output, kind):
+- type: Name of a type from which to evaluate path.
+- path: Access path leading to a function call.
+- input: Path relative to the function call that leads to input of the flow.
+- output: Path relative to the function call leading to the output of the flow.
+- kind: Kind of summary to add. Can be `taint` for taint-propagating flow, or `value for` value-preserving flow.
+
+#### example 
+
+```yaml
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: summaryModel
+    data:
+      - [
+          "builtins",
+          "Member[reversed]",
+          "Argument[0]",
+          "ReturnValue",
+          "taint",
+        ]
+```
+
+### typeModel
+
+- type1: Name of the type to reach.
+- type2: Name of the type from which to evaluate path.
+- path: Access path leading from type2 to type1.
+
+#### example 
+
+```yaml
+extensions:
+- addsTo:
+    pack: codeql/python-all
+    extensible: typeModel
+  data:
+    - [
+        "flask.Response",
+        "flask",
+        "Member[jsonify].ReturnValue",
+      ]
+```
+
+## types
+
+类型是一个字符串，用于标识一组值。在上一节提到的每个可扩展谓词中，第一列始终是类型名称。可以通过添加该类型的 typeModel 元组来定义类型。此外，还提供以下内置类型：
+
+- 包的名称与该包的导入语句相匹配。例如，类型 django 与表达式 import django 相匹配。
+- 类型 builtins 用于标识 builtins 包。在 Python 中，所有内置函数值都位于此包中，因此可以使用此类型来标识它们。
+- 以类名结尾的点路径标识该类的实例。如果添加后缀“ !” ，则类型指向类本身。
+
+## Access paths
+
+路径 、 输入和输出列由以句点分隔的组件列表组成，从左到右进行评估，每一步都从前一组值中选择一组新的值
+
+- Argument[number] selects the argument at the given index.
+- Argument[name:] selects the argument with the given name.
+- Argument[this] selects the receiver of a method call.
+- Parameter[number] selects the parameter at the given index.
+- Parameter[name:] selects the named parameter with the given name.
+- Parameter[this] selects the this parameter of a function.
+- ReturnValue selects the return value of a function or call.
+- Member[name] selects the function/method/class/value with the given name.
+- Instance selects instances of a class, including instances of its subclasses.
+- Attribute[name] selects the attribute with the given name.
+- ListElement selects an element of a list.
+- SetElement selects an element of a set.
+- TupleElement[number] selects the subscript at the given index.
+- DictionaryElement[name] selects the subscript at the given name.
+
+Additional notes about the syntax of operands:
+
+- Multiple operands may be given to a single component, as a shorthand for the union of the operands. For example, Member[foo,bar] matches the union of Member[foo] and Member[bar].
+- Numeric operands to Argument, Parameter, and WithArity may be given as an interval. For example, Argument[0..2] matches argument 0, 1, or 2.
+- Argument[N-1] selects the last argument of a call, and Parameter[N-1] selects the last parameter of a function, with N-2 being the second-to-last and so on.
+
+
+## Summary kinds
+taint: A summary that propagates taint. This means the output is not necessarily equal to the input, but it was derived from the input in an unrestrictive way. An attacker who controls the input will have significant control over the output as well.
+
+value: A summary that preserves the value of the input or creates a copy of the input such that all of its object properties are preserved.
 
 
 ## 不足
