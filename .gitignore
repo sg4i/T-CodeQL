@@ -1,4 +1,7 @@
 .github/
+
 .mypy_cache/
+
+.vscode/
 
 codeql/
