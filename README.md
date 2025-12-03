@@ -30,6 +30,7 @@ select /* ... expressions ... */
 - https://github.com/GitHubSecurityLab/codeql-zero-to-hero
 - https://codeql.github.com/docs/ql-language-reference/
 - https://codeql.github.com/codeql-standard-libraries/
+- https://codeql.github.com/docs/codeql-overview/supported-languages-and-frameworks/
 - https://github.com/github/codeql/blob/main/docs/query-metadata-style-guide.md
 - https://codeql.github.com/docs/writing-codeql-queries/metadata-for-codeql-queries/
 - CodeQL Cheat Sheets: [https://codeql-agent-project.github.io/](https://codeql-agent-project.github.io/)
