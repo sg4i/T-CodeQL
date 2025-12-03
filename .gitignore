@@ -1,1 +1,4 @@
-codeql-repo/
+.github/
+.mypy_cache/
+
+codeql/
