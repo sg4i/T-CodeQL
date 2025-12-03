@@ -176,6 +176,7 @@ codeql database analyze python-db \
 1. **[环境搭建](02-setup.md)** - 配置完整的开发环境
 2. **[CodeQL 基础](03-basics.md)** - 深入了解核心概念
 3. **[查询编写](04-writing-queries.md)** - 学习编写自己的查询
+4. **[Query Suite 完整指南](../codeql-query-suite-guide.md)** - 深入理解查询套件的使用
 
 ## 常用命令速查
 
@@ -187,7 +188,7 @@ codeql database create <db-name> --language=<lang> --source-root=.
 codeql query run <path-to-query.ql> --database=<db-name>
 # 示例：codeql query run ~/codeql-projects/codeql/python/ql/src/Security/CWE-089/SqlInjection.ql --database=python-db
 
-# 运行查询套件
+# 运行查询套件（详见 Query Suite 指南）
 codeql database analyze <db-name> <path-to-suite.qls> --format=sarif-latest --output=results.sarif
 
 # 升级数据库（当 CodeQL 版本更新时）
