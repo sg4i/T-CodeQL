@@ -5,7 +5,6 @@
 ## 目录
 
 - [什么是 Query Suite](#什么是-query-suite)
-- [使用场景对比](#使用场景对比)
 - [.qls 文件格式详解](#qls-文件格式详解)
 - [工作流程架构](#工作流程架构)
 - [常见查询套件类型](#常见查询套件类型)
@@ -52,42 +51,6 @@ codeql database analyze python-db \
 # 查询套件：使用查询包格式（推荐）
 codeql database analyze python-db \
   codeql/python-queries:codeql-suites/python-security-extended.qls \
-  --format=sarif-latest --output=results.sarif
-```
-
----
-
-## 使用场景对比
-
-### 何时使用单个查询？
-
-✅ **适用场景**：
-- **针对性研究**：调查特定类型的漏洞（如 XSS、CSRF）
-- **查询开发**：测试和调试新编写的查询
-- **快速验证**：确认某个漏洞是否存在
-- **学习探索**：理解 CodeQL 查询的工作原理
-
-**示例**：你怀疑代码中存在命令注入漏洞，想快速验证：
-
-```bash
-codeql query run codeql/python/ql/src/Security/CWE-078/CommandInjection.ql \
-  --database=python-db --format=csv
-```
-
-### 何时使用查询套件？
-
-✅ **适用场景**：
-- **全面安全扫描**：检测所有已知的安全漏洞
-- **代码质量检查**：运行代码风格和最佳实践检查
-- **CI/CD 集成**：自动化代码审查流程
-- **合规性检查**：确保代码符合安全标准（如 OWASP Top 10）
-- **定期审计**：周期性地对代码库进行全面分析
-
-**示例**：在 CI/CD 流水线中进行安全扫描：
-
-```bash
-codeql database analyze python-db \
-  codeql/python/ql/src/codeql-suites/python-code-scanning.qls \
   --format=sarif-latest --output=results.sarif
 ```
 
