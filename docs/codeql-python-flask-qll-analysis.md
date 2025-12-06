@@ -853,6 +853,20 @@ select tc, tc.getSourceArg()
 
 **这是 CodeQL 强大的地方**：你只需声明"什么是漏洞模式"，引擎会自动找到所有匹配项，无需编写命令式的搜索逻辑。
 
+**调试技巧**
+
+如果你想看 CodeQL 实际找到了什么，可以写查询：
+
+```ql
+import python
+import semmle.python.Concepts
+
+from TemplateConstruction tc
+select tc, tc.getSourceArg()
+```
+
+这会列出所有被识别为模板构造的调用。
+
 #### 5.5.5 检测流程串联
 
 完整的 SSTI 检测流程如下：
