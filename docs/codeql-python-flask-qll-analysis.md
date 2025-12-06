@@ -614,7 +614,246 @@ private class RenderTemplateStringSummary extends SummarizedCallable {
 
 这使得 CodeQL 可以追踪从模板字符串到渲染结果的数据流。
 
-#### 5.5.4 检测流程串联
+#### 5.5.4 声明式调用机制详解
+
+**关键问题：FlaskTemplateConstruction 为什么会被"调用"？**
+
+这是理解 CodeQL 工作机制的核心问题。实际上，CodeQL **不是命令式调用**，而是**声明式匹配**。
+
+##### 完整调用链追踪
+
+**1. 查询入口触发 Sink 查找**
+
+```ql
+// TemplateInjection.ql
+from TemplateInjectionFlow::PathNode source, TemplateInjectionFlow::PathNode sink
+where TemplateInjectionFlow::flowPath(source, sink)
+```
+
+查询启动时会使用污点跟踪配置。
+
+**2. 配置层定义 Sink**
+
+```ql
+// TemplateInjectionQuery.qll:16
+predicate isSink(DataFlow::Node node) {
+  node instanceof Sink  // ← 查找所有 Sink 类型的实例
+}
+```
+
+这里的关键是 `instanceof` 操作符会触发类型匹配。
+
+**3. 定制化层定义 Sink**
+
+```ql
+// TemplateInjectionCustomizations.qll:42-44
+class TemplateConstructionAsSink extends Sink {
+  TemplateConstructionAsSink() {
+    this = any(TemplateConstruction c).getSourceArg()  // ← 关键！
+  }
+}
+```
+
+`any(TemplateConstruction c)` 会收集**所有** `TemplateConstruction` 类型的实例。
+
+**4. 概念层定义 TemplateConstruction**
+
+```ql
+// Concepts.qll:876
+class TemplateConstruction extends DataFlow::Node
+  instanceof TemplateConstruction::Range {  // ← 关键！
+
+  DataFlow::Node getSourceArg() { result = super.getSourceArg() }
+}
+```
+
+`instanceof TemplateConstruction::Range` 的含义：
+- **所有继承 `TemplateConstruction::Range` 的类的实例**都是 `TemplateConstruction`
+- 这是 CodeQL 的"开放类"机制（open class mechanism）
+
+**5. Flask 实现层**
+
+```ql
+// Flask.qll:726
+private class FlaskTemplateConstruction extends TemplateConstruction::Range, API::CallNode {
+  FlaskTemplateConstruction() {
+    this = API::moduleImport("flask")
+        .getMember(["render_template_string", "stream_template_string"])
+        .getACall()
+  }
+
+  override DataFlow::Node getSourceArg() {
+    result = this.getArg(0)
+  }
+}
+```
+
+##### 声明式 vs 命令式思维对比
+
+**❌ 命令式思维（不正确）**
+
+```
+查询 → 调用 isSink() → 调用 TemplateConstructionAsSink
+  → 调用 TemplateConstruction → 调用 FlaskTemplateConstruction
+```
+
+**✅ 声明式思维（正确）**
+
+```
+查询 → 收集所有满足条件的实例
+
+收集过程：
+1. 找所有 Sink 的实例
+2. 其中包括 TemplateConstructionAsSink 的实例
+3. TemplateConstructionAsSink 需要 TemplateConstruction 实例
+4. TemplateConstruction 包括所有 Range 的实例
+5. FlaskTemplateConstruction 是 Range 的子类
+6. 因此代码中的 render_template_string 调用被收集
+```
+
+##### 具体执行过程示例
+
+假设代码：
+```python
+from flask import render_template_string
+result = render_template_string(user_input)  # ← 这一行
+```
+
+**CodeQL 执行过程：**
+
+**阶段 1：实例化（评估所有构造器）**
+
+```ql
+FlaskTemplateConstruction() {
+  this = API::moduleImport("flask")
+      .getMember(["render_template_string"])
+      .getACall()
+}
+```
+
+- 在数据库中查找所有 `flask.render_template_string` 的调用
+- 找到 `render_template_string(user_input)` 这个调用节点
+- 创建一个 `FlaskTemplateConstruction` 实例代表这个调用
+
+**阶段 2：类型层次关联**
+
+```
+FlaskTemplateConstruction 实例
+  ↓ extends
+TemplateConstruction::Range
+  ↓ instanceof (类型关系)
+TemplateConstruction
+  ↓ 调用 getSourceArg()
+返回第 0 个参数节点 (user_input)
+```
+
+**阶段 3：Sink 收集**
+
+```ql
+class TemplateConstructionAsSink extends Sink {
+  TemplateConstructionAsSink() {
+    this = any(TemplateConstruction c).getSourceArg()
+    //    ↑ 收集所有 TemplateConstruction 实例
+    //    包括我们的 FlaskTemplateConstruction 实例
+  }
+}
+```
+
+- `user_input` 参数节点被标记为 Sink
+
+**阶段 4：污点跟踪**
+
+```ql
+where TemplateInjectionFlow::flowPath(source, sink)
+```
+
+- 如果存在从 source 到 `user_input` 的污点流
+- 报告漏洞
+
+##### 类型层次可视化
+
+```
+                     DataFlow::Node
+                           ↑
+                           |
+              ┌────────────┴────────────┐
+              |                         |
+         Sink (抽象)         TemplateConstruction
+              ↑              (instanceof Range)
+              |                         ↑
+TemplateConstructionAsSink              |
+     (this = any(TC).getSourceArg())    |
+              ↑                          |
+              |                          |
+              └──────────┬───────────────┘
+                         |
+              TemplateConstruction::Range (抽象)
+                         ↑
+                         |
+             FlaskTemplateConstruction
+           (render_template_string 调用)
+```
+
+##### 关键机制解析
+
+**1. instanceof 的魔力**
+
+```ql
+class TemplateConstruction extends DataFlow::Node
+  instanceof TemplateConstruction::Range
+```
+
+这意味着：任何 `TemplateConstruction::Range` 的子类实例**自动成为** `TemplateConstruction` 的实例。这是一种**类型聚合机制**。
+
+**2. any() 的作用**
+
+```ql
+this = any(TemplateConstruction c).getSourceArg()
+```
+
+`any()` 遍历数据库中所有满足类型的实例，等价于：
+
+```ql
+exists(TemplateConstruction c | this = c.getSourceArg())
+```
+
+**3. 扩展点模式（Extension Point Pattern）**
+
+```
+抽象层定义接口 → 具体层实现 → 查询自动收集所有实现
+```
+
+这种设计使得：
+- 添加新框架支持（如 Django、Tornado）时，只需实现 `TemplateConstruction::Range`
+- 无需修改查询层或配置层的代码
+- 所有实现会自动被识别为 Sink
+
+##### 调试技巧
+
+如果你想查看 CodeQL 实际找到了什么实例，可以写这样的查询：
+
+```ql
+import python
+import semmle.python.Concepts
+
+from TemplateConstruction tc
+select tc, tc.getSourceArg()
+```
+
+这会列出所有被识别为模板构造的调用及其源参数。
+
+##### 总结
+
+`FlaskTemplateConstruction` 不是被"调用"的，而是：
+
+1. **声明**了一个模式："Flask 的 render_template_string 调用是模板构造"
+2. CodeQL **自动匹配**代码中所有符合这个模式的地方
+3. 通过**类型层次**，这些实例自动成为 `TemplateConstruction` 和 `Sink`
+4. 污点跟踪引擎使用这些 Sink 进行分析
+
+**这是 CodeQL 强大的地方**：你只需声明"什么是漏洞模式"，引擎会自动找到所有匹配项，无需编写命令式的搜索逻辑。
+
+#### 5.5.5 检测流程串联
 
 完整的 SSTI 检测流程如下：
 
@@ -701,7 +940,7 @@ render_template_string(user_input)   ← FlaskTemplateConstruction.getSourceArg(
 [CodeQL 报告路径]
 ```
 
-#### 5.5.5 完整检测流程图
+#### 5.5.6 完整检测流程图
 
 **图 1：三层架构交互图**
 
@@ -907,7 +1146,7 @@ sequenceDiagram
 
 这个序列展示了**面向对象设计**和**多态机制**如何让系统具有高度的可扩展性。
 
-#### 5.5.6 代码示例与检测演示
+#### 5.5.7 代码示例与检测演示
 
 **漏洞代码示例**
 
