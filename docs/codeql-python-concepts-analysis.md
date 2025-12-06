@@ -78,6 +78,275 @@ module SystemCommandExecution {
 - ✅ 清晰的扩展点标识
 - ✅ 保持查询接口稳定
 
+#### 1.1 instanceof 关键字详解
+
+**`instanceof` 是 CodeQL 中实现"开放类"（Open Class）机制的核心关键字。**
+
+##### instanceof 的本质
+
+```ql
+class TemplateConstruction extends DataFlow::Node
+  instanceof TemplateConstruction::Range {
+  // ...
+}
+```
+
+这个声明的含义：
+
+> **任何继承了 `TemplateConstruction::Range` 的类的实例，都自动成为 `TemplateConstruction` 的实例。**
+
+这是一种**类型聚合（Type Aggregation）**机制，而非传统的继承。
+
+##### instanceof vs extends 对比
+
+**传统 extends（封闭继承）：**
+
+```ql
+class Animal { }
+class Dog extends Animal { }
+class Cat extends Animal { }
+
+// Dog 实例 isa Animal ✓
+// Cat 实例 isa Animal ✓
+// 继承关系在定义时就固定
+```
+
+类型关系：
+```
+   Animal (基类)
+     ↑   ↑
+     |   |
+    Dog Cat
+   (子类)(子类)
+```
+
+**CodeQL instanceof（开放聚合）：**
+
+```ql
+// 在 Concepts.qll 中定义聚合类
+class TemplateConstruction extends DataFlow::Node
+  instanceof TemplateConstruction::Range { }
+
+// 在任何地方都可以扩展（开放扩展点）
+class FlaskTemplateConstruction extends TemplateConstruction::Range { }
+class DjangoTemplateConstruction extends TemplateConstruction::Range { }
+
+// 它们的实例自动成为 TemplateConstruction 的实例！
+```
+
+类型关系：
+```
+TemplateConstruction (聚合类)
+    instanceof
+       ↓
+TemplateConstruction::Range (标记接口)
+       ↑              ↑
+       |              |
+    Flask实现      Django实现
+
+任何继承 Range 的类 → 自动聚合到 TemplateConstruction
+```
+
+##### 为什么需要 instanceof？
+
+**问题：如何让多个框架的实现自动被识别？**
+
+**方案1：不使用 instanceof（❌ 不可扩展）**
+
+```ql
+class TemplateConstructionAsSink extends Sink {
+  TemplateConstructionAsSink() {
+    // 必须手动列举所有实现
+    this = any(FlaskTemplateConstruction c).getSourceArg()
+    or
+    this = any(DjangoTemplateConstruction c).getSourceArg()
+    or
+    this = any(Jinja2TemplateConstruction c).getSourceArg()
+    // 每次添加新框架都要修改这里 ❌
+  }
+}
+```
+
+**方案2：使用 instanceof（✅ 自动扩展）**
+
+```ql
+class TemplateConstruction extends DataFlow::Node
+  instanceof TemplateConstruction::Range {
+  DataFlow::Node getSourceArg() { result = super.getSourceArg() }
+}
+
+class TemplateConstructionAsSink extends Sink {
+  TemplateConstructionAsSink() {
+    // 自动包含所有 Range 的实现 ✅
+    this = any(TemplateConstruction c).getSourceArg()
+  }
+}
+```
+
+##### 运行时类型检查机制
+
+当 CodeQL 评估 `node instanceof TemplateConstruction` 时：
+
+```ql
+// 伪代码表示 instanceof 的语义
+predicate instanceof_TemplateConstruction(DataFlow::Node node) {
+  // 检查 node 是否是任何 TemplateConstruction::Range 子类的实例
+  exists(TemplateConstruction::Range r | r = node)
+}
+```
+
+**实际过程：**
+
+```
+查询: node instanceof TemplateConstruction?
+  ↓
+检查: node 是否是 TemplateConstruction::Range 的子类的实例?
+  ↓
+遍历所有继承 TemplateConstruction::Range 的类:
+  - FlaskTemplateConstruction ✓
+  - DjangoTemplateConstruction ✓
+  - Jinja2TemplateConstruction ✓
+  ↓
+如果 node 是其中任何一个的实例 → 返回 true
+```
+
+##### 类型层次完整示例
+
+```
+                     DataFlow::Node
+                           ↑
+                           | extends
+                           |
+              TemplateConstruction (聚合类)
+                           ↓
+                    instanceof (聚合关系)
+                           |
+              TemplateConstruction::Range (抽象标记接口)
+                           ↑
+                           | extends (传统继承)
+                           |
+                ┌──────────┼──────────┐
+                |          |          |
+         Flask实现   Django实现  Jinja2实现
+```
+
+**重要理解：**
+
+1. `TemplateConstruction` **不直接拥有**这些子类
+2. 但 `TemplateConstruction` 的实例**包括**所有 `Range` 子类的实例
+3. 这是通过 `instanceof` 关键字实现的**类型聚合**
+4. 这是一种**反向多态**机制
+
+##### 扩展点模式（Extension Point Pattern）
+
+```
+抽象层定义接口 → 具体层实现 → 查询自动收集所有实现
+```
+
+这种设计使得：
+- 添加新框架支持（如 Tornado、Pyramid）时，只需实现 `TemplateConstruction::Range`
+- 无需修改查询层或配置层的代码
+- 所有实现会自动被识别为 Sink
+
+##### 声明式 vs 命令式
+
+**❌ 命令式思维（不正确）：**
+
+```
+查询 → 调用 any(TemplateConstruction)
+  → 调用 TemplateConstruction 构造器
+  → 调用 FlaskTemplateConstruction 构造器
+```
+
+**✅ 声明式思维（正确）：**
+
+```
+查询 → 收集所有满足条件的实例
+
+收集过程：
+1. 评估所有类的构造器，创建实例
+2. 通过 instanceof 建立类型关系
+3. any(TemplateConstruction) 获取所有聚合的实例
+4. 包括所有 Range 子类的实例
+```
+
+##### 实际应用示例
+
+**定义聚合类（Concepts.qll）：**
+
+```ql
+module FileRead {
+  abstract class Range extends DataFlow::Node {
+    abstract DataFlow::Node getPathArg();
+  }
+}
+
+class FileRead extends DataFlow::Node instanceof FileRead::Range {
+  DataFlow::Node getPathArg() { result = super.getPathArg() }
+}
+```
+
+**Flask 实现（Flask.qll）：**
+
+```ql
+class FlaskSendFileCall extends FileRead::Range {
+  FlaskSendFileCall() {
+    this = API::moduleImport("flask").getMember("send_file").getACall()
+  }
+  override DataFlow::Node getPathArg() { result = this.getArg(0) }
+}
+```
+
+**标准库实现（Stdlib.qll）：**
+
+```ql
+class StdlibOpenCall extends FileRead::Range {
+  StdlibOpenCall() {
+    this = API::builtin("open").getACall()
+  }
+  override DataFlow::Node getPathArg() { result = this.getArg(0) }
+}
+```
+
+**查询层 - 自动包含所有实现：**
+
+```ql
+class FileReadSink extends Sink {
+  FileReadSink() {
+    this = any(FileRead fr).getPathArg()  // ✅ 自动包含 Flask 和 Stdlib
+  }
+}
+```
+
+##### 关键区别总结
+
+| 特性 | extends | instanceof |
+|------|---------|-----------|
+| 方向 | 子类继承父类 | 聚合类收集标记类的所有子类 |
+| 封闭性 | 封闭（只能在定义时继承） | 开放（任何地方都可以扩展） |
+| 修改影响 | 修改基类影响所有子类 | 添加新 Range 实现不影响现有代码 |
+| 用途 | 代码复用、多态 | 类型聚合、扩展点 |
+| 示例 | `Dog extends Animal` | `Sink instanceof Sink::Range` |
+
+##### instanceof 的精髓
+
+**这就是为什么 CodeQL 能够轻松扩展支持新框架的核心机制！**
+
+```ql
+class TemplateConstruction extends DataFlow::Node
+  instanceof TemplateConstruction::Range
+```
+
+这句话的意思是：
+
+1. `TemplateConstruction` 是一个**聚合类**
+2. 它**不定义具体实现**
+3. 它**自动包含**所有继承 `TemplateConstruction::Range` 的类的实例
+4. 这是一个**开放扩展点**，任何模块都可以添加新的实现
+5. 查询代码**无需修改**就能自动识别新的实现
+
+**你只需声明"什么是漏洞模式"，引擎会自动找到所有匹配项！** 🎯
+
 ### 2. 与数据流集成
 
 所有概念类都扩展 `DataFlow::Node`,无缝集成到数据流和污点追踪分析中:
