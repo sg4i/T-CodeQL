@@ -614,11 +614,11 @@ private class RenderTemplateStringSummary extends SummarizedCallable {
 
 这使得 CodeQL 可以追踪从模板字符串到渲染结果的数据流。
 
-#### 5.5.4 Source 定义机制与多重继承桥接
+#### 5.5.4 Source 定义机制与多重继承类型适配
 
 **关键问题：Source 是如何被定义的？为什么 Flask request 会自动成为模板注入的 Source？**
 
-这个问题涉及到 CodeQL 中一个非常重要的设计模式：**多重继承桥接模式**。
+这个问题涉及到 CodeQL 中一个非常重要的设计模式：**通过多重继承实现类型适配**。
 
 ##### Source 的三层定义结构
 
@@ -641,10 +641,10 @@ module TemplateInjection {
 但实际上包含三个层次：
 
 1. **抽象层** - `Source`: 提供扩展点，供用户自定义
-2. **桥接层** - `ActiveThreatModelSourceAsSource`: 连接威胁模型和模板注入检测
+2. **适配层** - `ActiveThreatModelSourceAsSource`: 通过多重继承连接威胁模型和模板注入检测
 3. **实现层** - `FlaskRequestSource`: 具体框架的实现
 
-##### 多重继承的桥接作用
+##### 通过多重继承实现类型适配
 
 `ActiveThreatModelSourceAsSource` 是理解整个机制的关键：
 
@@ -655,20 +655,48 @@ private class ActiveThreatModelSourceAsSource extends Source, ActiveThreatModelS
 }
 ```
 
-**这个类同时继承了两个父类**，起到**桥接**作用：
+**这个类同时继承了两个父类**，实现**类型适配**：
 
 ```
-威胁模型体系                     模板注入体系
-
-ActiveThreatModelSource ─────┐
-                             ├──► ActiveThreatModelSourceAsSource ───► Source
-Source ──────────────────────┘
+威胁模型体系              模板注入体系
+     │                       │
+     │                       │
+ActiveThreatModelSource   Source (抽象)
+     │                       │
+     └───────┬───────────────┘
+             │
+             ▼
+  ActiveThreatModelSourceAsSource
+  (多重继承：同时满足两个父类)
 ```
 
-**桥接效果**：
-- 任何 `ActiveThreatModelSource` 的实例
-- 都自动成为 `Source` 的实例
-- 因为 `ActiveThreatModelSourceAsSource` 同时继承了两者
+**多重继承语义**：
+- `extends Source` - 成为 `Source` 类型体系的一部分
+- `extends ActiveThreatModelSource` - 约束实例必须是活跃的威胁模型源
+- 无构造器 - 不添加额外约束，实例集合 = 满足两个父类的节点集合
+
+**类型适配效果**（基于 CodeQL 的类型交集语义）：
+
+1. **类定义的语义**：
+   ```ql
+   private class ActiveThreatModelSourceAsSource extends Source, ActiveThreatModelSource { }
+   ```
+   这个类没有构造器，意味着：**this 满足 ActiveThreatModelSourceAsSource ⟺ (this 满足 Source) ∧ (this 满足 ActiveThreatModelSource)**
+
+2. **类型交集**：
+   - 该类的实例集合 = `Source` 的实例集合 ∩ `ActiveThreatModelSource` 的实例集合
+   - 由于 `Source` 是抽象类（无独立实例），它的实例集合由其所有子类的并集构成
+
+3. **实例集合确定**：
+   - 因为无额外约束，所有满足 `ActiveThreatModelSource` 的节点都满足 `ActiveThreatModelSourceAsSource` 的定义
+   - 也就是说：`ActiveThreatModelSourceAsSource` 的实例集合 = `ActiveThreatModelSource` 的实例集合
+
+4. **类型体系连接**：
+   - 通过 `extends Source`，`ActiveThreatModelSourceAsSource` 成为 `Source` 类型体系的一个子类
+   - 当查询使用 `node instanceof Source` 时，会匹配到所有 `Source` 子类的实例
+   - 因此所有 `ActiveThreatModelSource` 的实例都会被匹配到
+
+5. **最终效果**：威胁模型体系中的 `ActiveThreatModelSource` 节点被纳入模板注入检测的 `Source` 体系中
 
 ##### 完整的类型继承链
 
@@ -677,19 +705,20 @@ Source ──────────────────────┘
 ```
 request.args.get('tpl') 这个节点
     ↓ (位于 Flask.qll:438-442)
-是 FlaskRequestSource 的实例
+1️⃣  是 FlaskRequestSource 的实例
     ↓ FlaskRequestSource extends RemoteFlowSource::Range
-是 RemoteFlowSource 的实例
+2️⃣  是 RemoteFlowSource 的实例（继承）
     ↓ RemoteFlowSource extends ThreatModelSource (getThreatModel() = "remote")
-是 ThreatModelSource 的实例
+3️⃣  是 ThreatModelSource 的实例（继承）
     ↓ 当 "remote" 威胁模型启用时 (Concepts.qll:67-74)
-是 ActiveThreatModelSource 的实例
+4️⃣  是 ActiveThreatModelSource 的实例（满足威胁模型条件）
     ↓ ActiveThreatModelSourceAsSource extends Source, ActiveThreatModelSource
-是 ActiveThreatModelSourceAsSource 的实例
+    ↓ 由于该类无构造器，所有 ActiveThreatModelSource 实例都满足其定义
+5️⃣  是 ActiveThreatModelSourceAsSource 的实例（多重继承，类型交集）
     ↓ ActiveThreatModelSourceAsSource extends Source
-是 Source 的实例 ✅
+6️⃣  是 Source 的实例 ✅（通过多重继承传导）
     ↓ (在 TemplateInjectionQuery.qll:15)
-被 node instanceof Source 匹配到！
+7️⃣  被 node instanceof Source 匹配到！
 ```
 
 **关键步骤解析**：
@@ -723,7 +752,7 @@ request.args.get('tpl') 这个节点
    }
    ```
 
-4. **TemplateInjectionCustomizations.qll** 通过桥接类连接
+4. **TemplateInjectionCustomizations.qll** 通过多重继承类型适配器连接
    ```ql
    private class ActiveThreatModelSourceAsSource extends Source, ActiveThreatModelSource { }
    ```
@@ -763,17 +792,17 @@ isinstance(d, Dog)     # True!
 
 ```ql
 // Flask request 节点验证过程
-node instanceof FlaskRequestSource              // ✅ true
-node instanceof RemoteFlowSource                // ✅ true (继承)
-node instanceof ThreatModelSource               // ✅ true (继承)
-node instanceof ActiveThreatModelSource         // ✅ true (威胁模型启用)
-node instanceof ActiveThreatModelSourceAsSource // ✅ true (继承)
-node instanceof Source                          // ✅ true (继承)
+node instanceof FlaskRequestSource              // ✅ true （直接定义）
+node instanceof RemoteFlowSource                // ✅ true （FlaskRequestSource 继承 RemoteFlowSource::Range）
+node instanceof ThreatModelSource               // ✅ true （RemoteFlowSource 继承 ThreatModelSource）
+node instanceof ActiveThreatModelSource         // ✅ true （威胁模型启用条件满足）
+node instanceof ActiveThreatModelSourceAsSource // ✅ true （多重继承，无额外约束）
+node instanceof Source                          // ✅ true （通过多重继承传导）
 
 // 所以 isSource(node) 返回 true！
 ```
 
-##### 为什么使用多重继承桥接？
+##### 为什么使用多重继承实现类型适配？
 
 **问题**：为什么不直接这样写？
 
@@ -838,7 +867,7 @@ class ConfigFileTemplateAsSource extends TemplateInjection::Source {
 
 ##### 设计模式可视化
 
-**图 1：多重继承桥接结构**
+**图 1：多重继承类型适配结构**
 
 ```
                      DataFlow::Node
@@ -854,7 +883,7 @@ class ConfigFileTemplateAsSource extends TemplateInjection::Source {
          │                                   │
          └─────────┬─────────────────────────┘
                    │
-    ActiveThreatModelSourceAsSource (桥接)
+    ActiveThreatModelSourceAsSource (类型适配器)
                    ↑
                    │
          "remote" 威胁模型启用时
@@ -897,7 +926,7 @@ class ConfigFileTemplateAsSource extends TemplateInjection::Source {
                   ▼
 ┌─────────────────────────────────────────┐
 │  Customizations: ActiveThreatModel...   │
-│  - 多重继承桥接                          │
+│  - 多重继承类型适配                      │
 │  - extends Source + ActiveThreatModel   │
 └─────────────────┬───────────────────────┘
                   │
@@ -918,9 +947,9 @@ private class ActiveThreatModelSourceAsSource extends Source, ActiveThreatModelS
 
 **原因**：
 
-1. **隐藏实现细节** - 用户不需要知道这个桥接类的存在
+1. **隐藏实现细节** - 用户不需要知道这个适配器类的存在
 2. **防止误用** - 避免用户错误地继承这个内部实现
-3. **允许重构** - CodeQL 团队可以随时改变桥接实现，不影响外部代码
+3. **允许重构** - CodeQL 团队可以随时改变适配器实现，不影响外部代码
 4. **不影响 instanceof** - `private` 限制的是名字可见性，不影响类型关系
 
 **用户应该做的**：
@@ -932,7 +961,7 @@ private class ActiveThreatModelSourceAsSource extends Source, ActiveThreatModelS
 **Source 定义机制的核心要点**：
 
 1. **抽象扩展点**：`abstract class Source` 提供用户扩展接口
-2. **多重继承桥接**：`ActiveThreatModelSourceAsSource` 连接威胁模型和漏洞检测
+2. **多重继承类型适配**：`ActiveThreatModelSourceAsSource` 通过多重继承将威胁模型源纳入漏洞检测体系
 3. **instanceof 多态**：查询通过 `instanceof Source` 自动匹配所有子类
 4. **类型传递性**：Flask request → RemoteFlowSource → ActiveThreatModelSource → Source
 5. **开放封闭**：用户可以添加新 Source，无需修改查询代码
@@ -1638,7 +1667,9 @@ Flask (module)
 ## 参考资料
 
 - [Flask 官方文档](https://flask.palletsprojects.com/)
+- [CodeQL Types 文档](https://codeql.github.com/docs/ql-language-reference/types/) - 多重继承和类型系统
 - [CodeQL API Graphs 文档](https://codeql.github.com/docs/codeql-language-guides/using-api-graphs-in-python/)
 - [CodeQL Concepts 文档](https://codeql.github.com/docs/codeql-language-guides/codeql-library-for-python/)
 - [Flask.qll 源码](../codeql/python/ql/lib/semmle/python/frameworks/Flask.qll)
+- [TemplateInjectionCustomizations.qll 源码](https://github.com/github/codeql/blob/main/python/ql/lib/semmle/python/security/dataflow/TemplateInjectionCustomizations.qll)
 
