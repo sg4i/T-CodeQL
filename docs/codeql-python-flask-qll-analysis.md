@@ -73,7 +73,158 @@ private import semmle.python.frameworks.data.ModelsAsData
 
 ---
 
-## 2. 模块化设计模式
+## 2. 框架库的通用性设计
+
+### 2.1 核心理念：一个库，多种查询
+
+**关键认识**：Flask.qll 不是为某一个特定查询（如 SSTI）设计的，而是一个**通用框架库**，需要支持多种不同的安全查询。
+
+### 2.2 建模分类与用途
+
+Flask.qll 中的建模可以分为以下几类：
+
+| 建模类型 | 示例 | 支持的查询/用途 | CWE 编号 |
+|---------|------|----------------|----------|
+| **污点源（Source）** | `FlaskRequestSource` | 所有污点追踪查询的入口点 | - |
+| **污点传播（Taint Steps）** | `InstanceTaintSteps` | 定义数据如何在对象内传播 | - |
+| **重定向响应** | `FlaskRedirectCall` | [开放重定向检测](https://github.com/github/codeql/blob/main/python/ql/src/Security/CWE-601/UrlRedirect.ql) | [CWE-601](https://cwe.mitre.org/data/definitions/601.html) |
+| **模板构造** | `FlaskTemplateConstruction` | [服务端模板注入检测](https://codeql.github.com/codeql-query-help/python/py-template-injection/) | [CWE-074](https://cwe.mitre.org/data/definitions/74.html) |
+| **文件系统访问** | `FlaskSendFromDirectoryCall` | [路径遍历检测](https://codeql.github.com/codeql-query-help/python/py-path-injection/) | [CWE-022](https://cwe.mitre.org/data/definitions/22.html) |
+| **Cookie 设置** | `FlaskResponseSetCookieCall` | Cookie 安全属性检测 | [CWE-614](https://cwe.mitre.org/data/definitions/614.html) |
+| **HTTP 响应** | `Response::InstanceSource` | [XSS 检测](https://codeql.github.com/codeql-query-help/python/py-reflective-xss/)、内容类型检测 | [CWE-079](https://cwe.mitre.org/data/definitions/79.html) |
+| **路由处理** | `FlaskRouteSetup` | 识别请求处理器、路由参数 | - |
+| **视图类** | `Views::View` | 识别基于类的视图、路由解析 | - |
+
+### 2.3 具体示例：FlaskRedirectCall 的作用
+
+让我们深入分析 `FlaskRedirectCall` 的实际用途：
+
+**建模定义**：
+
+```ql
+private class FlaskRedirectCall extends Http::Server::HttpRedirectResponse::Range,
+  DataFlow::CallCfgNode {
+
+  FlaskRedirectCall() {
+    this = API::moduleImport("flask").getMember("redirect").getACall()
+  }
+
+  override DataFlow::Node getRedirectLocation() {
+    result in [this.getArg(0), this.getArgByName("location")]
+  }
+}
+```
+
+**用途 1：开放重定向漏洞检测**
+
+[UrlRedirect.ql](https://github.com/github/codeql/blob/main/python/ql/src/Security/CWE-601/UrlRedirect.ql) 查询使用这个建模：
+
+```python
+# 漏洞代码示例
+from flask import Flask, request, redirect
+
+app = Flask(__name__)
+
+@app.route('/goto')
+def goto():
+    url = request.args.get('url')
+    return redirect(url)  # ❌ 开放重定向漏洞
+```
+
+**检测逻辑**：
+1. **Source**：`request.args.get('url')` 是用户输入（`FlaskRequestSource` + `InstanceTaintSteps`）
+2. **Sink**：`redirect()` 的 `location` 参数（`FlaskRedirectCall.getRedirectLocation()`）
+3. **查询**：如果存在 Source → Sink 的污点路径，报告漏洞
+
+**用途 2：支持其他重定向相关检测**
+
+- 检测重定向到外部域名
+- 检测重定向循环
+- 分析重定向链
+
+### 2.4 视图类建模的价值
+
+**Views 模块**虽然不直接用于漏洞检测，但提供了重要的**结构化信息**：
+
+```ql
+module Views {
+  module View {
+    API::Node subclassRef() {
+      result = API::moduleImport("flask")
+        .getMember("views")
+        .getMember(["View", "MethodView"])
+        .getASubclass*()
+    }
+  }
+}
+```
+
+**用途**：
+
+1. **识别请求处理器**
+   ```python
+   from flask.views import MethodView
+
+   class UserAPI(MethodView):
+       def get(self, user_id):  # ← Views 模块帮助识别这是请求处理器
+           return get_user(user_id)
+   ```
+
+2. **路由参数识别**
+   - `FlaskRouteSetup` 使用 View 信息识别路由参数 `user_id`
+   - 路由参数被标记为用户输入（Source）
+
+3. **数据流分析优化**
+   - 了解视图类的结构有助于更准确的数据流追踪
+   - 识别视图方法的返回值作为 HTTP 响应
+
+### 2.5 通用设计的优势
+
+**可扩展性**：
+- 新增查询无需修改框架库
+- 不同查询复用相同的建模
+
+**一致性**：
+- 所有查询使用统一的概念（Source、Sink、Response 等）
+- 降低学习成本
+
+**维护性**：
+- 框架 API 变化时，只需更新一处
+- 所有依赖的查询自动受益
+
+**示例：一个建模，多个查询**
+
+```
+FlaskRequestSource (污点源建模)
+    ↓
+支持的查询：
+    ├─ SSTI (CWE-074)
+    ├─ XSS (CWE-079)
+    ├─ SQL 注入 (CWE-089)
+    ├─ 命令注入 (CWE-078)
+    ├─ 路径遍历 (CWE-022)
+    └─ 开放重定向 (CWE-601)
+```
+
+### 2.6 总结
+
+**关键要点**：
+
+1. ✅ Flask.qll 是**通用框架库**，不是单一查询的附属品
+2. ✅ 每个建模都有明确的用途，支持一个或多个安全查询
+3. ✅ 看似"无关"的建模（如 View）提供结构化信息，支持精确分析
+4. ✅ 通过抽象概念（Concepts.qll）实现框架无关的查询
+
+**阅读建议**：
+
+当你看到一个建模时，问自己：
+- 它继承了哪个 `Concepts` 抽象类？（`HttpRedirectResponse`、`TemplateConstruction` 等）
+- 这个抽象类对应哪个安全概念？
+- 哪些查询会使用这个概念？
+
+---
+
+## 3. 模块化设计模式
 
 ### 2.1 顶层模块结构
 
@@ -1223,7 +1374,36 @@ private class FlaskRequestSource extends RemoteFlowSource::Range {
 }
 ```
 
-用户输入来源包括：
+**关键问题**：为什么只定义了 `request()` 对象，却能自动识别所有属性（args、form、json 等）？
+
+**答案**：通过 **InstanceTaintSteps** 机制实现污点传播（[Flask.qll:444-464](../codeql/python/ql/lib/semmle/python/frameworks/Flask.qll#L444-L464)）：
+
+```ql
+private class InstanceTaintSteps extends InstanceTaintStepsHelper {
+  InstanceTaintSteps() { this = "flask.Request" }
+
+  override DataFlow::Node getInstance() {
+    result = request().getAValueReachableFromSource()
+  }
+
+  override string getAttributeName() {
+    result in [
+      "path", "full_path", "base_url", "url", "method",
+      "environ", "cookies", "args", "values", "form",
+      "json", "data", "headers", "files"
+    ]
+  }
+
+  override string getMethodName() { result in ["get_data", "get_json"] }
+}
+```
+
+**工作原理**：
+1. **getInstance()** - 返回所有 `request` 对象的实例
+2. **getAttributeName()** - 列出会传播污点的属性
+3. **污点传播规则**：如果 `request` 被标记为污点源，那么 `request.args`、`request.form` 等所有列出的属性也会被自动标记为污点
+
+**用户输入来源**（通过污点传播自动识别）：
 - `request.args` - URL 查询参数
 - `request.form` - POST 表单数据
 - `request.json` - JSON 请求体
