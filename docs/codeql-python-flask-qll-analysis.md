@@ -1294,7 +1294,139 @@ private class InstanceTaintSteps extends InstanceTaintStepsHelper {
 - `request.headers` - HTTP 头
 - `request.data` - 原始请求数据
 
-**2. Sink（污点汇聚点）- 模板构造**
+**2. Sanitizer（净化器）- 常量比较**
+
+在污点追踪到达 Sink 之前，CodeQL 会检查是否存在净化器阻止污点传播。
+
+`ConstCompareAsSanitizerGuard` 是一个重要的净化器（[TemplateInjectionCustomizations.qll](https://github.com/github/codeql/blob/main/python/ql/lib/semmle/python/security/dataflow/TemplateInjectionCustomizations.qll)）：
+
+```ql
+/**
+ * A comparison with a constant, considered as a sanitizer-guard.
+ */
+class ConstCompareAsSanitizerGuard extends Sanitizer, ConstCompareBarrier { }
+```
+
+**作用**：当用户输入与常量进行比较时，该分支被认为是安全的。
+
+**示例**：
+
+```python
+@app.route("/render")
+def render():
+    template_type = request.args.get("type", "default")
+
+    # Sanitizer: 常量比较
+    if template_type == "greeting":  # ← 与常量 "greeting" 比较
+        # 这个分支中，template_type 被净化
+        template = f"<h1>Hello {template_type}!</h1>"
+        return render_template_string(template)  # ✅ 不报告
+    else:
+        return "Invalid type"
+```
+
+**为什么安全？**
+- `template_type == "greeting"` 比较后，在 `if` 分支内
+- `template_type` 只能是字符串 `"greeting"`
+- 即使原始值来自用户输入，但已被限制为常量值
+- 因此污点被"净化"
+
+**如果没有 `ConstCompareAsSanitizerGuard` 会怎样？**
+
+没有这个 Sanitizer 会导致**误报（False Positive）**！
+
+**场景对比**：
+
+```python
+@app.route("/render")
+def render():
+    template_type = request.args.get("type", "default")
+
+    if template_type == "greeting":  # ← 常量比较
+        # 实际上 template_type 只能是 "greeting"
+        template = f"<h1>Type: {template_type}</h1>"
+        return render_template_string(template)
+```
+
+| 有 Sanitizer | 无 Sanitizer |
+|-------------|-------------|
+| ✅ **不报告**（正确） | ❌ **报告漏洞**（误报） |
+| 识别到常量比较 | 无法识别常量比较 |
+| 污点被净化 | 污点继续传播 |
+| 理解实际安全语义 | 仅基于数据流分析 |
+
+**无 Sanitizer 的污点追踪过程**：
+
+```
+步骤 1：Source
+    request.args.get("type")
+    ↓
+    template_type = 污点 ✓
+
+步骤 2：常量比较（但无 Sanitizer）
+    if template_type == "greeting":
+    ↓
+    常量比较被忽略，污点继续存在 ⚠️
+    ↓
+    template_type = 污点（未净化）
+
+步骤 3：污点传播
+    template = f"<h1>Type: {template_type}</h1>"
+    ↓
+    template = 污点 ✓
+
+步骤 4：Sink
+    render_template_string(template)
+    ↓
+    存在 Source → Sink 路径
+    ↓
+    报告漏洞 ❌（误报！）
+```
+
+**为什么这是误报？**
+
+从**安全语义**角度分析：
+- 在 `if template_type == "greeting":` 分支内
+- `template_type` 的值**只能是** `"greeting"` 字符串
+- 即使攻击者传入 `?type={{7*7}}`，条件不成立，不会进入该分支
+- 因此这段代码实际上是**安全的**
+
+**CodeQL 的智能之处**：
+
+`ConstCompareAsSanitizerGuard` 实现了**路径敏感分析（Path-Sensitive Analysis）**：
+
+```ql
+class ConstCompareAsSanitizerGuard extends Sanitizer, ConstCompareBarrier {
+  // 识别常量比较，在比较后的分支中净化污点
+}
+```
+
+这种 Sanitizer 让 CodeQL 能够：
+1. ✅ 理解代码的**控制流语义**
+2. ✅ 识别**值域约束**（value range constraints）
+3. ✅ 减少**误报**
+4. ✅ 提高检测**精确度**
+
+**对比：有/无 Sanitizer 的检测质量**
+
+| 指标 | 有 ConstCompareAsSanitizerGuard | 无 ConstCompareAsSanitizerGuard |
+|------|--------------------------------|--------------------------------|
+| **误报率** | 低 ✅ | 高 ❌ |
+| **准确性** | 高 ✅ | 低 ❌ |
+| **路径敏感** | 支持 ✅ | 不支持 ❌ |
+| **实用性** | 高 ✅ | 低（太多误报）❌ |
+
+**总结**：
+
+`ConstCompareAsSanitizerGuard` 是 CodeQL 实现**高精度检测**的关键机制之一。它让 CodeQL 不仅仅是简单的污点追踪，而是能够理解代码的控制流和语义约束，从而：
+
+- ✅ 减少误报
+- ✅ 提高可用性
+- ✅ 符合真实安全场景
+
+这就是为什么 CodeQL 的检测质量远超简单的静态分析工具！
+
+**3. Sink（污点汇聚点）- 模板构造**
 
 所有 `FlaskTemplateConstruction` 实例的 `getSourceArg()` 都是 sink（[TemplateInjectionCustomizations.qll:42-44](../codeql/python/ql/lib/semmle/python/security/dataflow/TemplateInjectionCustomizations.qll#L42-L44)）：
 
@@ -1652,6 +1784,219 @@ def greet_safe2():
     # GOOD: 使用预定义模板文件
     return render_template('greet.html', name=name)
 ```
+
+#### 5.5.9 安全代码分析：为什么模板参数化是安全的？
+
+**关键问题**：为什么上面的安全代码不会被 CodeQL 误报为 SSTI 漏洞？
+
+让我们深入分析 CodeQL 如何区分安全代码和不安全代码。
+
+**安全代码示例**：
+
+```python
+@app.route("/")
+def index():
+    name = request.args.get("name", "")
+    # <SAFE>
+    # User input is passed as a context variable, not concatenated into template
+    # Jinja2 auto-escapes the variable, preventing template injection
+    template = "<h1>Hello {{ name }}!</h1>"
+    return render_template_string(template, name=name)
+    # </SAFE>
+```
+
+**不安全代码对比**：
+
+```python
+@app.route("/")
+def index_unsafe():
+    name = request.args.get("name", "")
+    # <UNSAFE>
+    # User input is concatenated into template string
+    template = f"<h1>Hello {name}!</h1>"  # ❌ 拼接用户输入
+    return render_template_string(template)
+    # </UNSAFE>
+```
+
+### CodeQL 的检测逻辑
+
+**1. Sink 定义：只检查模板字符串参数**
+
+`FlaskTemplateConstruction` 的定义：
+
+```ql
+private class FlaskTemplateConstruction extends TemplateConstruction::Range, API::CallNode {
+  FlaskTemplateConstruction() {
+    this = API::moduleImport("flask")
+        .getMember(["render_template_string", "stream_template_string"])
+        .getACall()
+  }
+
+  override DataFlow::Node getSourceArg() {
+    result = this.getArg(0)  // ← 关键：只检查第 0 个参数（模板字符串）
+  }
+}
+```
+
+**关键点**：`getSourceArg()` 只返回 `render_template_string()` 的**第一个参数**（模板字符串本身），不检查后续的上下文参数（`name=name`）。
+
+**2. 安全代码的污点追踪分析**
+
+```python
+name = request.args.get("name", "")  # ← Source
+template = "<h1>Hello {{ name }}!</h1>"  # ← 字面量常量，无污点
+return render_template_string(template, name=name)
+                              # ↑ Sink    ↑ 非 Sink
+```
+
+**污点追踪过程**：
+
+```
+步骤 1：识别 Source
+    request.args.get("name", "")
+    ↓
+    被标记为污点源（FlaskRequestSource + InstanceTaintSteps）
+    ↓
+    name 变量 = 污点
+
+步骤 2：检查模板字符串
+    template = "<h1>Hello {{ name }}!</h1>"
+    ↓
+    这是字面量常量，没有任何污点数据流入
+    ↓
+    template 变量 = 非污点 ✅
+
+步骤 3：检查 Sink
+    render_template_string(template, name=name)
+    ↓
+    Sink = this.getArg(0) = template 变量
+    ↓
+    template 是非污点
+    ↓
+    不存在 Source → Sink 的污点路径
+    ↓
+    不报告漏洞 ✅
+```
+
+**3. 不安全代码的污点追踪分析**
+
+```python
+name = request.args.get("name", "")  # ← Source
+template = f"<h1>Hello {name}!</h1>"  # ← 包含污点！
+return render_template_string(template)
+                              # ↑ Sink
+```
+
+**污点追踪过程**：
+
+```
+步骤 1：识别 Source
+    request.args.get("name", "")
+    ↓
+    name 变量 = 污点
+
+步骤 2：污点传播
+    template = f"<h1>Hello {name}!</h1>"
+    ↓
+    f-string 拼接导致污点传播
+    ↓
+    template 变量 = 污点 ❌
+
+步骤 3：检查 Sink
+    render_template_string(template)
+    ↓
+    Sink = this.getArg(0) = template 变量
+    ↓
+    template 包含污点
+    ↓
+    存在 Source → Sink 的污点路径
+    ↓
+    报告漏洞 ❌
+```
+
+### 关键机制对比
+
+| 方面 | 安全代码 | 不安全代码 |
+|------|----------|-----------|
+| **模板字符串** | `"<h1>Hello {{ name }}!</h1>"` 字面量 | `f"<h1>Hello {name}!</h1>"` 包含拼接 |
+| **污点状态** | 模板字符串 = 非污点 | 模板字符串 = 污点 |
+| **用户输入位置** | 作为模板**上下文参数** | 直接**拼接到模板字符串** |
+| **Sink 检查** | `getArg(0)` = 非污点 | `getArg(0)` = 污点 |
+| **CodeQL 结果** | ✅ 不报告 | ❌ 报告漏洞 |
+
+### Flask.qll 如何保证非误报？
+
+**设计原则**：
+
+1. **精确的 Sink 定义**
+   - 只检查模板字符串参数（`getArg(0)`）
+   - 不检查模板上下文参数（`name=name`）
+   - 避免误报合法的模板变量传递
+
+2. **遵循框架安全机制**
+   - Jinja2 会自动转义模板变量 `{{ name }}`
+   - 只有模板字符串本身包含用户输入才是漏洞
+   - 模板变量传递是框架推荐的安全做法
+
+3. **污点追踪的准确性**
+   - 字符串字面量不是 Source
+   - 只有通过拼接、格式化等操作引入用户输入，字符串才会被污染
+   - f-string、`+` 操作符、`%` 格式化都会传播污点
+
+### 可视化对比
+
+**安全代码的数据流**：
+
+```
+用户输入 (Source)
+    ↓
+request.args.get("name")
+    ↓
+name 变量 (污点)
+    │
+    ├─→ 作为上下文参数传递 → name=name (非 Sink)
+    │                                    ↓
+    │                                Jinja2 自动转义
+    │                                    ↓
+    │                                安全输出
+    │
+字面量模板 (非污点)
+    ↓
+template = "<h1>Hello {{ name }}!</h1>"
+    ↓
+render_template_string(template, ...) (Sink，但无污点)
+    ↓
+✅ 安全
+```
+
+**不安全代码的数据流**：
+
+```
+用户输入 (Source)
+    ↓
+request.args.get("name")
+    ↓
+name 变量 (污点)
+    ↓
+f-string 拼接 → template = f"<h1>Hello {name}!</h1>"
+    ↓
+template 变量 (污点)
+    ↓
+render_template_string(template) (Sink，有污点)
+    ↓
+❌ 漏洞
+```
+
+### 总结
+
+**CodeQL 不会误报安全代码的原因**：
+
+1. ✅ **精确的 Sink 定义**：只检查模板字符串参数，不检查上下文参数
+2. ✅ **准确的污点追踪**：字面量常量不包含污点，只有拼接/格式化才传播污点
+3. ✅ **符合框架语义**：遵循 Jinja2 的安全模型，模板变量会被自动转义
+4. ✅ **必要条件检查**：只有当模板字符串本身包含用户输入时才报告
+
+**关键要点**：模板参数化不是绕过检测的技巧，而是**真正安全的编程实践**，CodeQL 的设计准确反映了这一安全原则。
 
 ---
 
