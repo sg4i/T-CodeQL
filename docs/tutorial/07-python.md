@@ -2168,3 +2168,6 @@ select sink.getNode(), source, sink, "数据流"
 4. **统计数量**：使用 `count()` 验证查询范围
 5. **添加调试输出**：临时添加额外的 select 子句
 
+## REF
+
+- [CodeQL query help for Python](https://codeql.github.com/codeql-query-help/python/)
