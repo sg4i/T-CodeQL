@@ -23,6 +23,7 @@
 ## 1. Directory Structure
 请首先以 Markdown 代码块展示生成的文件目录结构。**必须严格遵守以下层级：**
 
+```text
 framework_misuse_audit/
 └── [language]/                # 例如: python
     └── [framework_name]/      # 例如: flask, django, 或 stdlib(标准库)
@@ -32,6 +33,7 @@ framework_misuse_audit/
             ├── vuln_[name].py
             └── safe_[name].py
             ├── README.md
+```
 
 ## 2. Naming and ID Rules (命名和ID规则)
 [id]应为从01开始的递增序号。
