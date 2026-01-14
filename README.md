@@ -25,8 +25,12 @@ select /* ... expressions ... */
 - ql-language-reference: codeql/docs/codeql/ql-language-reference
 - codeql-language-guides: codeql/docs/codeql/codeql-language-guides/abstract-syntax-tree-classes-for-working-with-go-programs.rst
 
-## REF
+## 📚 文档资源
 
+### 项目文档
+- [CodeQL Query Suite 完整指南](docs/codeql-query-suite-guide.md) - 查询套件使用场景、架构和最佳实践
+
+### 外部参考
 - https://github.com/GitHubSecurityLab/codeql-zero-to-hero
 - https://codeql.github.com/docs/ql-language-reference/
 - https://codeql.github.com/codeql-standard-libraries/
